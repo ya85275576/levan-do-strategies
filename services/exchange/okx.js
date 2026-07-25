@@ -32,7 +32,19 @@ export class OkxClient {
   constructor() {
     this.config = getConfig();
     this.lastOrderTime = 0;
+    this._simulatedOrders = [];       // 模拟模式下的订单记录
+    this._simulatedPositions = {};    // 模拟模式下的持仓记录
     this._checkCredentials();
+    this._logMode();
+  }
+
+  /**
+   * 输出运行模式日志
+   */
+  _logMode() {
+    if (this.config.dryRun) {
+      console.log('[OKX] 🧪 模拟模式已启用 — 所有操作仅输出日志，不实际连接交易所');
+    }
   }
 
   /**
@@ -68,8 +80,19 @@ export class OkxClient {
 
   /**
    * 发送已签名的 REST 请求
+   * 模拟模式下仅输出日志，不真实发送
    */
   async _request(method, requestPath, body = null) {
+    if (this.config.dryRun) {
+      const bodyStr = body ? JSON.stringify(body) : '';
+      console.log(`[OKX] [模拟] ${method} ${requestPath} ${bodyStr ? 'body: ' + bodyStr : ''}`);
+      return {
+        code: '0',
+        msg: '模拟模式 — 请求已记录（未实际发送）',
+        data: [{}],
+      };
+    }
+
     const { baseUrl, apiKey, apiPassphrase } = this.config;
     const timestamp = this._timestamp();
     const bodyStr = body ? JSON.stringify(body) : '';
@@ -226,8 +249,33 @@ export class OkxClient {
       this.lastOrderTime = now;
       const res = await this._request('POST', '/api/v5/trade/order', orderParams);
 
-      const orderId = res.data?.[0]?.ordId || 'unknown';
+      const orderId = res.data?.[0]?.ordId || 'sim-' + Date.now();
       console.log(`[OKX] ✅ 订单成功: orderId=${orderId}`);
+
+      // 模拟模式：记录订单并更新虚拟持仓
+      if (this.config.dryRun) {
+        const orderRecord = {
+          id: orderId,
+          symbol: instId,
+          side: side.toLowerCase(),
+          qty: parseFloat(qty),
+          type: normalizedOrderType,
+          price: price || null,
+          time: new Date().toISOString(),
+        };
+        this._simulatedOrders.push(orderRecord);
+
+        // 更新模拟持仓
+        const posKey = instId;
+        const currentPos = this._simulatedPositions[posKey] || 0;
+        if (side.toLowerCase() === 'buy') {
+          this._simulatedPositions[posKey] = currentPos + parseFloat(qty);
+        } else {
+          this._simulatedPositions[posKey] = currentPos - parseFloat(qty);
+        }
+        console.log(`[OKX] [模拟持仓] ${instId}: ${this._simulatedPositions[posKey].toFixed(4)}`);
+      }
+
       return res;
     } catch (err) {
       console.error(`[OKX] ❌ 下单异常 ${symbolInfo}:`, err.message);
@@ -244,6 +292,29 @@ export class OkxClient {
     console.log(`[OKX] 📤 平仓: ${instId}`);
 
     try {
+      // 模拟模式：直接查询虚拟持仓
+      if (this.config.dryRun) {
+        const posKey = instId;
+        const posSize = this._simulatedPositions[posKey] || 0;
+        if (posSize === 0) {
+          console.log(`[OKX] ℹ️ [模拟] ${instId} 无持仓，无需平仓`);
+          return { code: '0', msg: 'No position to close (simulated)' };
+        }
+
+        const posSide = posSize > 0 ? 'long' : 'short';
+        const closeQty = Math.abs(posSize);
+        console.log(`[OKX] [模拟] 平仓 ${instId} (${posSide}): ${closeQty}`);
+
+        // 清零持仓
+        this._simulatedPositions[posKey] = 0;
+
+        return {
+          code: '0',
+          msg: `模拟平仓成功: ${instId} ${posSide} ${closeQty}`,
+          data: [{ ordId: 'sim-close-' + Date.now() }],
+        };
+      }
+
       // 获取当前持仓
       const positions = await this.getPositions(symbol);
       const pos = positions?.[0];
@@ -273,6 +344,35 @@ export class OkxClient {
    * @param {string} [symbol] - 可选，指定交易对
    */
   async getPositions(symbol) {
+    // 模拟模式：返回虚拟持仓数据
+    if (this.config.dryRun) {
+      if (symbol) {
+        const instId = toOkxSymbol(symbol);
+        const posSize = this._simulatedPositions[instId] || 0;
+        if (posSize === 0) {
+          return [];
+        }
+        return [{
+          instId,
+          pos: String(posSize),
+          posSide: posSize > 0 ? 'long' : 'short',
+          mgnMode: this.config.positionMode,
+          uTime: Date.now().toString(),
+        }];
+      }
+
+      // 返回所有持仓
+      return Object.entries(this._simulatedPositions)
+        .filter(([_, v]) => v !== 0)
+        .map(([instId, posSize]) => ({
+          instId,
+          pos: String(posSize),
+          posSide: posSize > 0 ? 'long' : 'short',
+          mgnMode: this.config.positionMode,
+          uTime: Date.now().toString(),
+        }));
+    }
+
     try {
       let requestPath = '/api/v5/account/positions';
       if (symbol) {
@@ -286,6 +386,29 @@ export class OkxClient {
       console.error('[OKX] 获取持仓失败:', err.message);
       throw err;
     }
+  }
+
+  /**
+   * 获取模拟模式下的订单记录
+   */
+  getSimulatedOrders() {
+    return [...this._simulatedOrders];
+  }
+
+  /**
+   * 获取模拟模式下的持仓快照
+   */
+  getSimulatedPositions() {
+    return { ...this._simulatedPositions };
+  }
+
+  /**
+   * 重置模拟状态
+   */
+  resetSimulation() {
+    this._simulatedOrders = [];
+    this._simulatedPositions = {};
+    console.log('[OKX] 🔄 模拟状态已重置');
   }
 
   /**
