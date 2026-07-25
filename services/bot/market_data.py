@@ -357,7 +357,7 @@ class RestApiDataFeed:
         symbols: List[str],
         base_timeframe_sec: int = 900,
         on_candle: Optional[Callable[[str, Candle], None]] = None,
-        max_concurrent: int = 20,
+        max_concurrent: int = 10,
         rest_url: Optional[str] = None,
     ):
         """
@@ -425,6 +425,10 @@ class RestApiDataFeed:
         params = {"instId": symbol, "bar": bar, "limit": str(limit)}
 
         async with self._semaphore:
+            # 速率限制：每个请求间延迟 30ms，避免 OKX 429 限流
+            # OKX 公开 API 限制：20 次请求 / 2 秒
+            await asyncio.sleep(0.03)
+
             try:
                 async with self._session.get(
                     f"{self.rest_url}/api/v5/market/candles",

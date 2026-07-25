@@ -33,7 +33,7 @@ OkxOrderManager ──── OKX REST API (下单)
 | `strategy.py` | LE VAN DO 策略引擎 — 状态机 |
 | `order_manager.py` | OKX REST API 订单执行器 |
 | `bot.py` | 主程序 — 整合所有模块 |
-| `ecosystem.config.js` | PM2 进程管理配置 |
+| `ecosystem.config.cjs` | PM2 进程管理配置（.cjs 因父级 package.json 的 type: module） |
 
 ## 快速开始
 
@@ -84,10 +84,10 @@ DRY_RUN=false python bot.py
 npm install -g pm2
 
 # 启动（模拟模式）
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.cjs
 
 # 启动（实盘）
-pm2 start ecosystem.config.js --env production
+pm2 start ecosystem.config.cjs --env production
 
 # 查看日志
 pm2 logs le-van-do-bot
