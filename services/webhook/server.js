@@ -31,7 +31,7 @@ import cors from 'cors';
 import { exec } from 'node:child_process';
 import { createRequire } from 'node:module';
 import os from 'node:os';
-import { readFileSync, statfsSync } from 'node:fs';
+import { readFileSync, statfsSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, validateConfig } from '../config/index.js';
@@ -72,6 +72,10 @@ const recentSignals = [];
 const MAX_SIGNALS = 200;
 const signalCounts = { longE: 0, shortE: 0, longX: 0, shortX: 0 };
 let signalsTotal = 0;
+
+/** Bot 内部产生的信号总数（从状态文件读取） */
+let botSignalsTotal = 0;
+let botTotalSignals = 0;
 
 /** 最近符号价格缓存 */
 const symbolPrices = {};
@@ -199,6 +203,26 @@ function getServerUptime() {
   return Math.floor((Date.now() - serverStartTime) / 1000);
 }
 
+// ======== 读取 Bot 状态文件 ========
+
+const BOT_STATUS_FILE = '/tmp/le-van-do-bot-status.json';
+
+/**
+ * 从状态文件读取 Bot 内部信号统计数据
+ */
+function readBotStatus() {
+  try {
+    if (!existsSync(BOT_STATUS_FILE)) {
+      return null;
+    }
+    const raw = readFileSync(BOT_STATUS_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取 Bot 状态文件失败: ${err.message}`);
+    return null;
+  }
+}
+
 // ======== 启动前配置检查 ========
 
 const cfgCheck = validateConfig();
@@ -280,6 +304,20 @@ app.get('/api/status', async (_req, res) => {
     memory: p.monit?.memory ?? 0,
   }));
 
+  // 读取 Bot 状态
+  const botStatus = readBotStatus();
+  if (botStatus) {
+    botTotalSignals = botStatus.total_signals || 0;
+    // 用 Bot 的讯号更新符号状态
+    if (botStatus.symbols) {
+      for (const [sym, info] of Object.entries(botStatus.symbols)) {
+        if (info.total_signals > 0 && (!symbolStatus[sym] || symbolStatus[sym] === 'no_data')) {
+          symbolStatus[sym] = 'ok';
+        }
+      }
+    }
+  }
+
   // 持仓列表
   const positionsList = [];
   for (const [symbol, size] of Object.entries(positions)) {
@@ -324,6 +362,7 @@ app.get('/api/status', async (_req, res) => {
     })),
     signals: {
       total: signalsTotal,
+      botTotal: botTotalSignals,
       counts: { ...signalCounts },
       recent: recent50,
     },
@@ -780,7 +819,12 @@ function renderSignals(d) {
   const counts = sig.counts || { longE: 0, shortE: 0, longX: 0, shortX: 0 };
   const recent = sig.recent || [];
 
-  let html = '<div class="card"><div class="card-title">📡 策略信号 <span style="font-weight:400;color:#484f58;font-size:12px">累计 ' + sig.total + ' 条</span></div>';
+  const botTotal = sig.botTotal || 0;
+  const totalLabel = botTotal > 0
+    ? ('累计 ' + sig.total + ' 条（Webhook） · Bot 内部 ' + botTotal + ' 条')
+    : ('累计 ' + sig.total + ' 条');
+
+  let html = '<div class="card"><div class="card-title">📡 策略信号 <span style="font-weight:400;color:#484f58;font-size:12px">' + totalLabel + '</span></div>';
 
   // Signal counts
   html += '<div class="signal-counts" style="margin-bottom:16px">';

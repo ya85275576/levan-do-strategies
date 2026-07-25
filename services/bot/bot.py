@@ -27,6 +27,7 @@ LE VAN DO® OKX 原生交易机器人 — 主程序
   或使用 PM2 (见 ecosystem.config.js)
 """
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -444,6 +445,14 @@ class OkxTradingBot:
         self.start_time: Optional[float] = None
         self.total_signals: int = 0
 
+        # 状态文件路径（供 Webhook 仪表板读取）
+        self._status_file = os.environ.get(
+            "BOT_STATUS_FILE",
+            "/tmp/le-van-do-bot-status.json",
+        )
+        self._flush_task: Optional[asyncio.Task] = None
+        self._signal_queue: list = []
+
     # ---- 策略信号回调 ----
 
     def _on_strategy_signal(self, symbol: str, signal: SignalType, tp_sl: TpSlLevels):
@@ -457,6 +466,14 @@ class OkxTradingBot:
             f"(累计: {self.total_signals}, "
             f"该交易对: {sh.total_signals if sh else 0})"
         )
+
+        # 加入訊號佇列，供 _flush_status_file 寫入狀態檔案
+        self._signal_queue.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "signal": signal.value,
+            "price": round(tp_sl.entry, 2) if tp_sl.entry else None,
+        })
 
     # ---- 市场数据回调 ----
 
@@ -496,6 +513,9 @@ class OkxTradingBot:
             logger.info(f"║  {' '.join(padded)} ║")
 
         logger.info("╚══════════════════════════════════════════════════════════╝")
+
+        # ---- 啟動狀態寫入任務（供 Webhook 儀表板讀取） ----
+        self._flush_task = asyncio.create_task(self._flush_status_file())
 
         # ---- 数据源：优先使用 REST API，失败则回退到模拟数据 ----
         rest_feed = RestApiDataFeed(
@@ -593,6 +613,17 @@ class OkxTradingBot:
         """停止机器人"""
         self._running = False
 
+        # 最後一次寫入狀態檔案
+        await self._flush_status_file_now()
+
+        # 取消定時寫入任務
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+
         if self.subscriber:
             await self.subscriber.close()
             self.subscriber = None
@@ -625,6 +656,87 @@ class OkxTradingBot:
 
         logger.info("╚════════════════════════════════════════════╝")
         logger.info("👋 机器人已停止")
+
+    async def _flush_status_file(self):
+        """
+        定期將 Bot 狀態寫入 JSON 檔案，供 Webhook 儀表板讀取。
+        每 3 秒寫入一次。
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(3)
+                if not self._running:
+                    break
+
+                # 彙整各交易對狀態
+                symbols_state = {}
+                for sym, unit in self.trading_units.items():
+                    sh = unit.signal_handler.get_summary()
+                    st = unit.strategy.get_status()
+                    symbols_state[sym] = {
+                        "total_signals": sh["total_signals"],
+                        "last_signal": sh["last_signal"],
+                        "position_side": sh["position_side"],
+                        "entry_price": sh["entry_price"],
+                        "condition": st.get("condition", 0),
+                        "higher_tf_candles": unit.higher_tf_candle_count,
+                        "aggregator_progress": round(unit.aggregator.progress_pct, 1),
+                    }
+
+                # 取出佇列中最近的訊號（最多 50 條）
+                recent_signals = self._signal_queue[-50:]
+                self._signal_queue.clear()
+
+                status = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "running": self._running,
+                    "uptime_seconds": int(time.time() - (self.start_time or time.time())),
+                    "total_signals": self.total_signals,
+                    "symbol_count": len(self.trading_units),
+                    "dry_run": self.config.get("dry_run", True),
+                    "network": self.config.get("network", "testnet"),
+                    "signal_queue": recent_signals,
+                    "symbols": symbols_state,
+                }
+
+                tmp = self._status_file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(status, f, ensure_ascii=False)
+                os.replace(tmp, self._status_file)
+
+            except Exception as e:
+                logger.error(f"寫入狀態檔案失敗: {e}")
+
+    async def _flush_status_file_now(self):
+        """立即寫入一次狀態檔案（在 stop 時調用）"""
+        try:
+            symbols_state = {}
+            for sym, unit in self.trading_units.items():
+                sh = unit.signal_handler.get_summary()
+                st = unit.strategy.get_status()
+                symbols_state[sym] = {
+                    "total_signals": sh["total_signals"],
+                    "last_signal": sh["last_signal"],
+                    "position_side": sh["position_side"],
+                    "entry_price": sh["entry_price"],
+                    "condition": st.get("condition", 0),
+                    "higher_tf_candles": unit.higher_tf_candle_count,
+                }
+
+            recent = self._signal_queue[-50:]
+            status = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "running": False,
+                "uptime_seconds": int(time.time() - (self.start_time or time.time())),
+                "total_signals": self.total_signals,
+                "signal_queue": recent,
+                "symbols": symbols_state,
+            }
+
+            with open(self._status_file, "w") as f:
+                json.dump(status, f, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"寫入最終狀態檔案失敗: {e}")
 
 
 # ================================================================
