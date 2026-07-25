@@ -357,23 +357,21 @@ class RestApiDataFeed:
         symbols: List[str],
         base_timeframe_sec: int = 900,
         on_candle: Optional[Callable[[str, Candle], None]] = None,
-        max_concurrent: int = 10,
         rest_url: Optional[str] = None,
     ):
         """
         :param symbols: 交易对列表
         :param base_timeframe_sec: 基础 K 线周期（秒），同时也是轮询间隔
         :param on_candle: K 线更新回调 (symbol, candle)
-        :param max_concurrent: 最大并发请求数
         :param rest_url: REST API 基础 URL（默认 https://www.okx.com）
+
+        速率限制：顺序请求，每个请求间隔 250ms（≈ 4 req/s），
+        远低于 OKX 公开 API 的 10 req/s 限制。
         """
         self.symbols = symbols
         self.base_timeframe_sec = base_timeframe_sec
         self.on_candle = on_candle
         self.rest_url = (rest_url or self.REST_URL).rstrip("/")
-
-        # 并发控制
-        self._semaphore = asyncio.Semaphore(max_concurrent)
 
         # HTTP 会话
         self._session: Optional[aiohttp.ClientSession] = None
@@ -424,47 +422,46 @@ class RestApiDataFeed:
         bar = self._get_bar()
         params = {"instId": symbol, "bar": bar, "limit": str(limit)}
 
-        async with self._semaphore:
-            # 速率限制：每个请求间延迟 100ms，避免 OKX 429 限流
-            # OKX 公开 API 限制：20 次请求 / 2 秒（10 req/s）
-            # 50 交易对 * 100ms = 5s 总耗时 ≈ 10 req/s，符合限制
-            await asyncio.sleep(0.10)
+        try:
+            async with self._session.get(
+                f"{self.rest_url}/api/v5/market/candles",
+                params=params,
+            ) as resp:
+                if resp.status == 429:
+                    text = await resp.text()
+                    logger.warning(f"[REST] {symbol} 限流(429)，将在下一轮重试")
+                    return []
 
-            try:
-                async with self._session.get(
-                    f"{self.rest_url}/api/v5/market/candles",
-                    params=params,
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        logger.error(f"[REST] {symbol} HTTP {resp.status}: {text[:200]}")
-                        return []
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error(f"[REST] {symbol} HTTP {resp.status}: {text[:200]}")
+                    return []
 
-                    data = await resp.json()
-                    if data.get("code") != "0":
-                        logger.error(
-                            f"[REST] {symbol} API 错误: "
-                            f"code={data.get('code')}, msg={data.get('msg')}"
-                        )
-                        return []
+                data = await resp.json()
+                if data.get("code") != "0":
+                    logger.error(
+                        f"[REST] {symbol} API 错误: "
+                        f"code={data.get('code')}, msg={data.get('msg')}"
+                    )
+                    return []
 
-                    candles = []
-                    for raw in data.get("data", []):
-                        candle = self._parse_candle(raw)
-                        if candle:
-                            candles.append(candle)
+                candles = []
+                for raw in data.get("data", []):
+                    candle = self._parse_candle(raw)
+                    if candle:
+                        candles.append(candle)
 
-                    return candles
+                return candles
 
-            except asyncio.TimeoutError:
-                logger.warning(f"[REST] {symbol} 请求超时")
-                return []
-            except aiohttp.ClientError as e:
-                logger.warning(f"[REST] {symbol} 请求异常: {e}")
-                return []
-            except Exception as e:
-                logger.error(f"[REST] {symbol} 未知错误: {e}", exc_info=True)
-                return []
+        except asyncio.TimeoutError:
+            logger.warning(f"[REST] {symbol} 请求超时")
+            return []
+        except aiohttp.ClientError as e:
+            logger.warning(f"[REST] {symbol} 请求异常: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"[REST] {symbol} 未知错误: {e}", exc_info=True)
+            return []
 
     def _parse_candle(self, raw: list) -> Optional[Candle]:
         """解析 OKX K 线数据（与 WebSocket 相同的格式）"""
@@ -488,30 +485,29 @@ class RestApiDataFeed:
         """
         轮询所有交易对的最新 K 线
 
+        为避免 OKX 速率限制（20 次请求 / 2 秒），采用顺序请求 + 内部延迟。
+        每个请求间隔 250ms ≈ 4 req/s，远低于 OKX 的 10 req/s 限制。
+        50 个交易对耗时约 12.5 秒，对于 15 分钟的轮询间隔影响极小。
+
         Returns:
             bool: 是否至少有一个交易对获取到数据
         """
         limit = 100  # 每次获取 100 根，OKX 限制最大 100
 
-        # 并发发起所有请求
-        tasks = {symbol: self._fetch_candles(symbol, limit) for symbol in self.symbols}
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-
-        total_new = 0
         symbols_with_data = 0
+        total_new = 0
 
-        for symbol, result in zip(self.symbols, results):
-            if isinstance(result, Exception):
-                logger.error(f"[REST] {symbol} 轮询异常: {result}")
-                continue
+        for symbol in self.symbols:
+            # 请求间延迟，严守速率限制
+            await asyncio.sleep(0.25)
 
-            candles = result  # OKX 返回倒序（最新在前）
+            candles = await self._fetch_candles(symbol, limit)
             if not candles:
                 continue
 
             symbols_with_data += 1
 
-            # 反转成正序（最旧在前），以便聚合器正确累加
+            # OKX 返回倒序（最新在前），反转成正序
             candles.reverse()
 
             # 过滤已处理过的 K 线（按时间戳去重）
