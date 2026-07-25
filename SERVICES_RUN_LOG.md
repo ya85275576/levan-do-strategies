@@ -1,6 +1,25 @@
 
 # LE VAN DO® — 全流程模拟交易验证操作日志
 
+## 部署记录
+
+### 2026-07-25 — 东京服务器部署 Webhook 服务 (OKX 模拟模式)
+
+| 项目 | 值 |
+|------|-----|
+| **服务器** | 43.133.210.83 (Ubuntu 24.04) |
+| **服务端口** | 3000 |
+| **模式** | DRY_RUN=true, EXCHANGE_TYPE=okx |
+| **进程管理** | PM2 (webhook) |
+| **健康检查** | GET /health ✅ |
+| **Webhook 测试** | longE/shortE/longX/shortX 全部通过 ✅ |
+| **风控验证** | 频率限制正常 ✅ |
+| **部署报告** | 见 `DEPLOYMENT_REPORT.md` |
+
+---
+
+## 首次模拟验证 (2026-07-25)
+
 > 运行时间: 2026-07-25T11:58:48.455Z
 > 运行命令: `cd services && node scripts/simulate.js`
 > 策略: LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X
