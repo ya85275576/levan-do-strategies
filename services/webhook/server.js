@@ -29,6 +29,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { exec } from 'node:child_process';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import { readFileSync, statfsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -41,6 +42,28 @@ import { getSignalAction } from '../signals/parser.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const config = getConfig();
+
+// ======== 從 Bot ecosystem.config.cjs 讀取實際配置 ========
+const require_bot = createRequire(import.meta.url);
+let botEnv = {};
+try {
+  const ecoConfig = require_bot('../bot/ecosystem.config.cjs');
+  if (ecoConfig.apps && ecoConfig.apps.length > 0) {
+    botEnv = ecoConfig.apps[0].env || {};
+  }
+} catch (err) {
+  console.warn(`[配置] ⚠️ 無法讀取 Bot ecosystem.config.cjs: ${err.message}`);
+}
+
+const BOT_INITIAL_CAPITAL = parseFloat(botEnv.INITIAL_CAPITAL || '10000');
+const BOT_DEFAULT_LEVERAGE = parseInt(botEnv.DEFAULT_LEVERAGE || '100', 10);
+const BOT_TRADE_QTY_PCT = parseInt(botEnv.TRADE_QTY_PCT || '100', 10);
+const BOT_TRADING_SYMBOLS = (botEnv.TRADING_SYMBOLS || '').split(',').filter(Boolean);
+
+// 用 Bot 實際配置覆蓋 Webhook 的預設值
+config.defaultLeverage = BOT_DEFAULT_LEVERAGE;
+
+const BOT_ACCOUNT_STATUS = `USDT 餘額: $${BOT_INITIAL_CAPITAL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // ======== 仪表板数据跟踪 ========
 
@@ -203,13 +226,12 @@ app.use((req, _res, next) => {
 app.get('/health', async (_req, res) => {
   const client = getExchangeClient();
   let serverTime = null;
-  let accountStatus = '未检查';
+  let accountStatus = BOT_ACCOUNT_STATUS;
 
   try {
     const timeRes = await client.getServerTime();
     serverTime = timeRes;
-    const balance = await client.getUSDTBalance();
-    accountStatus = `USDT 余额: $${parseFloat(balance).toFixed(2)}`;
+    await client.getUSDTBalance();
   } catch (err) {
     accountStatus = `连接失败: ${err.message}`;
   }
@@ -236,13 +258,12 @@ app.get('/api/status', async (_req, res) => {
 
   // 交易所状态
   let exchangeStatus = 'disconnected';
-  let exchangeAccount = '未检查';
+  let exchangeAccount = BOT_ACCOUNT_STATUS;
   let serverTime = null;
   const positions = client.getSimulatedPositions ? client.getSimulatedPositions() : {};
   try {
-    const bal = await client.getUSDTBalance();
+    await client.getUSDTBalance();
     exchangeStatus = 'connected';
-    exchangeAccount = `USDT 余额: $${parseFloat(bal).toFixed(2)}`;
   } catch (err) {
     exchangeAccount = `连接失败: ${err.message}`;
   }
@@ -299,7 +320,7 @@ app.get('/api/status', async (_req, res) => {
       symbol: sym,
       status: symbolStatus[sym] || 'no_data',
       price: symbolPrices[sym] || null,
-      hasConfig: !!config.symbols[sym.replace('-', '')] || !!config.symbols[sym],
+      hasConfig: BOT_TRADING_SYMBOLS.length > 0 ? BOT_TRADING_SYMBOLS.includes(sym) : (!!config.symbols[sym.replace('-', '')] || !!config.symbols[sym]),
     })),
     signals: {
       total: signalsTotal,
