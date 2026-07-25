@@ -52,6 +52,9 @@ LE VAN DO® - Swing Signals & Overlays Private™ 是一个基于 Pine Script v5
 
 ## 自动化交易链路
 
+本仓库提供兩条独立执行路径：
+
+### 路径 A：TradingView → Webhook → OKX (既有)
 ```
 TradingView 策略警报
         │
@@ -71,16 +74,40 @@ Webhook 接收端点 (POST /webhook)
                                           MT5 终端下单（需 Windows）
 ```
 
-兩種執行後端可隨時切換，既有 OKX 服務不受影響。
-详细配置说明请参阅 [`services/README.md`](services/README.md)。
+### 路径 B：OKX WebSocket → 策略引擎 → 自动交易 (新增)
+```
+OKX WebSocket 行情数据 (实时 K 线)
+        │
+        ▼  candle1m
+OKX 原生交易机器人 (services/bot/bot.py)
+        │
+        ├── MarketDataSubscriber  ← 订阅实时 K 线
+        ├── CandleAggregator      ← 聚合高周期 K 线 (tfmult=18)
+        ├── LeVanDoStrategy       ← 策略引擎 (HA/Renko/EMA/ATR/RSI)
+        ├── SignalHandler         ← 信号处理 (三種 TP/SL 模式)
+        └── OkxOrderManager       →  OKX REST API 下单
+```
+
+兩種路徑可同時運行，互不影響。
+- 路径 A 适合已有 TradingView 策略的用户
+- 路径 B 适合希望直接使用 OKX 行情、无需 TradingView 的用户
+
+详细配置说明请参阅 [`services/README.md`](services/README.md) 和 [`services/bot/README.md`](services/bot/README.md)。
 
 ## 使用方式
 
+### 路径 A：TradingView + Webhook
 1. 在 TradingView Pine Editor 中打开 `.pine` 文件
 2. 将代码粘贴到新的 Pine Script 指标/策略中
 3. 调整参数后添加到图表运行
 4. 配置 Webhook 警报，指向 [`services/`](services/) 提供的接收端点
 5. 启动信号执行服务，开始自动化交易
+
+### 路径 B：OKX 原生机器人（无需 TradingView）
+1. 进入 `services/bot/` 目录
+2. 配置环境变量（OKX API 凭据、策略参数）
+3. 运行 `python bot.py` 或 `pm2 start ecosystem.config.js`
+4. 机器人直接通过 OKX WebSocket 行情驱动策略引擎自动交易
 
 ## 许可证
 
