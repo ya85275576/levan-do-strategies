@@ -2,6 +2,7 @@
 LE VAN DO® OKX 原生交易机器人 — 配置管理器
 
 从环境变量加载所有配置，与现有 services/config/index.js 保持一致的配置来源。
+支持多交易对（逗号分隔的 TRADING_SYMBOLS 环境变量）。
 """
 import os
 import json
@@ -26,6 +27,11 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _parse_symbols(raw: str) -> list:
+    """解析逗号分隔的交易对列表，去空白"""
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def get_config():
     """
     获取完整配置字典。
@@ -45,6 +51,13 @@ def get_config():
         "testnet": "https://www.okx.com",
         "production": "https://www.okx.com",
     }
+
+    # ---- 解析交易对列表 ----
+    default_symbols = "BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,DOGE-USDT,ADA-USDT,AVAX-USDT,DOT-USDT,LINK-USDT,MATIC-USDT,UNI-USDT,SHIB-USDT,LTC-USDT,BCH-USDT,ATOM-USDT,ETC-USDT,XLM-USDT,TRX-USDT,FIL-USDT,APT-USDT,ARB-USDT,OP-USDT,SUI-USDT,PEPE-USDT,INJ-USDT,TIA-USDT,SEI-USDT,RUNE-USDT,FET-USDT,GRT-USDT,NEAR-USDT,ICP-USDT,RENDER-USDT,IMX-USDT,MKR-USDT,AAVE-USDT,CRV-USDT,SNX-USDT,COMP-USDT,EOS-USDT,ALGO-USDT,FLOW-USDT,SAND-USDT,MANA-USDT,AXS-USDT,THETA-USDT,FTM-USDT,CVX-USDT,1INCH-USDT,STX-USDT"
+    raw_symbols = os.environ.get("TRADING_SYMBOLS", default_symbols)
+    symbols = _parse_symbols(raw_symbols)
+    if not symbols:
+        symbols = ["BTC-USDT"]
 
     config = {
         # ---- 交易所 ----
@@ -70,7 +83,7 @@ def get_config():
         "setup_type": os.environ.get("SETUP_TYPE", "Open/Close"),  # Open/Close | Renko
 
         # 基础时间框架（分钟）
-        "base_timeframe_min": _env_int("BASE_TIMEFRAME_MIN", 1),
+        "base_timeframe_min": _env_int("BASE_TIMEFRAME_MIN", 15),
         # 高时间框架倍数 (tfmult=18)
         "tf_mult": _env_int("TF_MULT", 18),
 
@@ -78,7 +91,7 @@ def get_config():
         "sideways_filter": os.environ.get(
             "SIDEWAYS_FILTER",
             "No Filtering"
-        ),  # Filter with Atr | Filter with RSI | Atr or RSI | Atr and RSI | No Filtering | Entry Only in sideways market(By ATR or RSI) | Entry Only in sideways market(By ATR and RSI)
+        ),
 
         # RSI 参数
         "rsi_length": _env_int("RSI_LENGTH", 7),
@@ -108,19 +121,21 @@ def get_config():
         "default_leverage": _env_int("DEFAULT_LEVERAGE", 1),
         "position_mode": os.environ.get("POSITION_MODE", "isolated"),
 
-        # 交易对
-        "symbol": os.environ.get("TRADING_SYMBOL", "BTC-USDT"),
+        # 交易对列表（多交易对）
+        "symbols": symbols,
+        # 第一个交易对作为默认（向后兼容）
+        "symbol": symbols[0] if symbols else "BTC-USDT",
 
         # ---- 交易数量（根据余额百分比） ----
-        "trade_qty_pct": _env_float("TRADE_QTY_PCT", 50.0),  # Pine: default_qty_value=50
+        "trade_qty_pct": _env_float("TRADE_QTY_PCT", 50.0),
 
-        # ---- 模拟初始资金 ----
+        # ---- 模拟初始资金（每个交易对分配） ----
         "initial_capital": _env_float("INITIAL_CAPITAL", 5000.0),
 
         # ---- PM2 / 日志 ----
         "log_level": os.environ.get("LOG_LEVEL", "INFO").upper(),
 
-        # ---- Webhook 回调（可选，用于向现有 webhook 服务发送信号） ----
+        # ---- Webhook 回调（可选） ----
         "webhook_url": os.environ.get("BOT_WEBHOOK_URL", ""),
     }
 
