@@ -32,7 +32,7 @@
     ├── package.json                         ← Node.js 依赖
     ├── .env.example                         ← 环境变量模板
     ├── config/                              ← 交易所配置
-    ├── exchange/                            ← 交易所 API 封装（Bybit）
+    ├── exchange/                            ← 交易所 API 封装（OKX）
     ├── signals/                             ← TradingView 信号解析
     └── webhook/                             ← Webhook 接收端点
 ```
@@ -59,7 +59,7 @@ Webhook 接收端点 (POST /webhook)
         ▼  信号解析
 信号解析器 (longE/shortE/longX/shortX)
         │
-        ▼  Bybit V5 REST API
+        ▼  OKX V5 REST API
 交易所执行 (测试网/实盘)
         │
         ▼  订单结果

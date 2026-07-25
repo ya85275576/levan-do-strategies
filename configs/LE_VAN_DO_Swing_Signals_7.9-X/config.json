@@ -11,7 +11,7 @@
     "author": "TraderHalai",
     "license": "MPL-2.0",
     "tags": ["LE VAN DO", "Swing Signals", "Overlays", "TradingView", "Pine Script", "Multi-Timeframe"],
-    "exchange": "BYBIT",
+    "exchange": "OKX",
     "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
   },
 

@@ -4,7 +4,7 @@
  * 统一管理交易所连接、交易参数、风控设置。
  * 配置来源优先级：环境变量 > exchange.json 默认值
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,11 +40,11 @@ export function getConfig() {
     network,
     isTestnet,
     baseUrl: defaultConfig.network[network].baseUrl,
-    wsUrl: defaultConfig.network[network].wsUrl,
 
-    // API 凭据（来自环境变量 / Secrets）
-    apiKey: process.env.BYBIT_API_KEY || '',
-    apiSecret: process.env.BYBIT_API_SECRET || '',
+    // API 凭据 — OKX 三件套（来自环境变量 / Secrets）
+    apiKey: process.env.OKX_API_KEY || '',
+    apiSecret: process.env.OKX_API_SECRET || '',
+    apiPassphrase: process.env.OKX_API_PASSPHRASE || '',
 
     // Webhook 安全
     webhookSecret: process.env.WEBHOOK_SECRET || '',
@@ -83,10 +83,13 @@ export function validateConfig() {
   const errors = [];
 
   if (!cfg.apiKey) {
-    errors.push('BYBIT_API_KEY 未配置 — 请在 Secrets 页面添加');
+    errors.push('OKX_API_KEY 未配置 — 请在 Secrets 页面添加');
   }
   if (!cfg.apiSecret) {
-    errors.push('BYBIT_API_SECRET 未配置 — 请在 Secrets 页面添加');
+    errors.push('OKX_API_SECRET 未配置 — 请在 Secrets 页面添加');
+  }
+  if (!cfg.apiPassphrase) {
+    errors.push('OKX_API_PASSPHRASE 未配置 — 请在 Secrets 页面添加（创建 API Key 时设置）');
   }
   if (!cfg.webhookSecret) {
     errors.push('WEBHOOK_SECRET 未配置 — 请设置一个随机密钥用于 TradingView 请求验证');

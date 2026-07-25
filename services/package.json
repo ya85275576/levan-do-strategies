@@ -1,18 +1,17 @@
 {
   "name": "le-van-do-trading-bot",
   "version": "1.0.0",
-  "description": "LE VAN DO® 交易策略自动化执行服务 - TradingView Webhook → 交易所挂单",
+  "description": "LE VAN DO® 交易策略自动化执行服务 - TradingView Webhook → OKX 挂单",
   "main": "webhook/server.js",
   "type": "module",
   "scripts": {
     "start": "node webhook/server.js",
-    "start:testnet": "NODE_ENV=testnet node webhook/server.js",
-    "start:live": "NODE_ENV=production node webhook/server.js",
+    "start:testnet": "EXCHANGE_NETWORK=testnet node webhook/server.js",
+    "start:live": "EXCHANGE_NETWORK=production node webhook/server.js",
     "dev": "node --watch webhook/server.js"
   },
   "dependencies": {
     "express": "^4.21.0",
-    "bybit-api": "^5.10.0",
     "dotenv": "^16.4.5",
     "cors": "^2.8.5"
   },

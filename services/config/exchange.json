@@ -1,36 +1,40 @@
 {
-  "exchange": "BYBIT",
+  "exchange": "OKX",
 
   "network": {
     "testnet": {
-      "baseUrl": "https://api-testnet.bybit.com",
-      "wsUrl": "wss://stream-testnet.bybit.com/v5/public/linear",
-      "description": "Bybit 测试网 - 用于验证交易链路，无实际资金风险"
+      "baseUrl": "https://www.okx.com",
+      "description": "OKX 模拟盘交易 — 使用模拟账户 API Key（https://www.okx.com）"
     },
     "production": {
-      "baseUrl": "https://api.bybit.com",
-      "wsUrl": "wss://stream.bybit.com/v5/public/linear",
-      "description": "Bybit 实盘 - 真实资金交易"
+      "baseUrl": "https://www.okx.com",
+      "description": "OKX 实盘 — 真实资金交易"
     }
   },
 
   "symbols": {
     "BTCUSDT": {
+      "okxInstId": "BTC-USDT",
+      "instType": "SWAP",
       "minQty": 0.001,
       "qtyStep": 0.001,
-      "pricePrecision": 2,
+      "pricePrecision": 1,
       "description": "Bitcoin / USDT 永续合约"
     },
     "ETHUSDT": {
+      "okxInstId": "ETH-USDT",
+      "instType": "SWAP",
       "minQty": 0.01,
       "qtyStep": 0.01,
-      "pricePrecision": 2,
+      "pricePrecision": 1,
       "description": "Ethereum / USDT 永续合约"
     },
     "SOLUSDT": {
+      "okxInstId": "SOL-USDT",
+      "instType": "SWAP",
       "minQty": 0.1,
       "qtyStep": 0.1,
-      "pricePrecision": 3,
+      "pricePrecision": 2,
       "description": "Solana / USDT 永续合约"
     }
   },
@@ -38,12 +42,12 @@
   "orderTypes": {
     "market": {
       "description": "市价单 - 以当前市场最优价格立即成交",
-      "bybitValue": "Market",
+      "okxValue": "market",
       "supported": true
     },
     "limit": {
       "description": "限价单 - 以指定或更优价格成交，可能部分成交或未成交",
-      "bybitValue": "Limit",
+      "okxValue": "limit",
       "supported": true
     }
   },

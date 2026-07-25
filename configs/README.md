@@ -63,7 +63,7 @@ configs/
 
 策略的交易所连接、API Key 管理、测试网/实盘切换等配置由 [`services/`](../services/) 目录管理。
 
-- 当前预设交易所：**BYBIT**（见 `config.json` → `meta.exchange`）
+- 当前预设交易所：**OKX**（见 `config.json` → `meta.exchange`）
 - 交易所连接配置文档：[`services/README.md`](../services/README.md)
-- API 凭据通过团队 Secrets 页面配置（`BYBIT_API_KEY` / `BYBIT_API_SECRET`）
-- 支持市价单/限价单、测试网/实盘切换
+- API 凭据通过团队 Secrets 页面配置（`OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`）
+- 支持市价单/限价单、模拟盘/实盘切换

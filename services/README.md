@@ -1,6 +1,6 @@
 # LE VAN DO® 交易所 API 连接配置
 
-> 本文档描述从 TradingView 策略警报 → Webhook 接收 → 交易所挂单的完整链路配置。
+> 本文档描述从 TradingView 策略警报 → Webhook 接收 → OKX 交易所挂单的完整链路配置。
 
 ---
 
@@ -8,9 +8,9 @@
 
 ```
 ┌─────────────────┐     HTTP POST      ┌──────────────────────┐     REST API      ┌──────────────┐
-│   TradingView    │  ──────────────►   │  Webhook 接收服务     │  ─────────────►  │   Bybit      │
+│   TradingView    │  ──────────────►   │  Webhook 接收服务     │  ─────────────►  │    OKX       │
 │   Pine Script    │   alert_message    │  localhost:3000      │                  │   交易所     │
-│   (策略警报)      │                    │  POST /webhook       │                   │  (测试网/实盘)│
+│   (策略警报)      │                    │  POST /webhook       │                   │  (模拟盘/实盘)│
 └─────────────────┘                    └──────────────────────┘                   └──────────────┘
                                                │
                                                ▼
@@ -27,27 +27,28 @@
 
 | 项目 | 值 |
 |------|-----|
-| **交易所** | Bybit（已在 `configs/` 中预设） |
-| **账户类型** | 统一交易账户（Unified Trading Account） |
-| **API 权限** | 需要开通 **合约交易** 和 **API 交易** 权限 |
+| **交易所** | OKX（已在 `configs/` 中预设） |
+| **账户类型** | 统一账户 |
+| **API 权限** | 需要开通 **交易** 权限 |
 
 ### 2. API 凭据（必须）
 
-> ⚠️ **安全提示**：API Key 和 Secret **不要** 写在代码或 `.env` 文件中提交到 Git。
+> ⚠️ **安全提示**：API Key、Secret 和 Passphrase **不要** 写在代码或 `.env` 文件中提交到 Git。
 > 请通过团队 **Secrets 页面** 配置，仅允许交易所运维代理使用。
 
-需要添加的两个 Secrets：
+OKX 使用 **三件套认证**，需要添加三个 Secrets：
 
 | Secret 名称 | 说明 | 获取位置 |
 |-------------|------|----------|
-| `BYBIT_API_KEY` | Bybit API Key | Bybit → 账户 → API 管理 |
-| `BYBIT_API_SECRET` | Bybit API Secret | 创建 API Key 时生成（仅显示一次） |
+| `OKX_API_KEY` | API Key | OKX → 账户 → API → 创建 API Key |
+| `OKX_API_SECRET` | Secret Key | 创建 API Key 时生成（仅显示一次） |
+| `OKX_API_PASSPHRASE` | Passphrase | 创建 API Key 时设置的访问密码 |
 
 **API 权限建议**：
 | 权限 | 是否必需 | 说明 |
 |------|---------|------|
-| 读取钱包/订单 | ✅ 必需 | 获取余额、检查持仓 |
-| 合约交易 | ✅ 必需 | 执行开仓/平仓 |
+| 读取 | ✅ 必需 | 获取余额、检查持仓 |
+| 交易 | ✅ 必需 | 执行开仓/平仓 |
 | 提现 | ❌ 关闭 | 安全起见，永远不要开放提现权限 |
 
 ## 🚀 快速开始
@@ -69,12 +70,13 @@ cp .env.example .env
 编辑 `.env` 文件：
 
 ```ini
-# 交易环境：testnet（测试网）或 production（实盘）
+# 交易环境：testnet（模拟盘）或 production（实盘）
 EXCHANGE_NETWORK=testnet
 
-# Bybit API 凭据（先在 Secrets 页面配置，然后在环境变量中引用）
-BYBIT_API_KEY=你的_API_KEY
-BYBIT_API_SECRET=你的_API_SECRET
+# OKX API 凭据（先在 Secrets 页面配置，然后在环境变量中引用）
+OKX_API_KEY=你的_API_KEY
+OKX_API_SECRET=你的_API_SECRET
+OKX_API_PASSPHRASE=你的_PASSPHRASE
 
 # Webhook 安全密钥（生成一个随机字符串）
 WEBHOOK_SECRET=your-random-secret-string
@@ -89,13 +91,13 @@ DEFAULT_ORDER_TYPE=market
 DEFAULT_LEVERAGE=1
 ```
 
-> 💡 **测试网建议**：首次运行时务必使用 `EXCHANGE_NETWORK=testnet`，
-> 到 [Bybit Testnet](https://testnet.bybit.com/) 获取测试网 API Key 和测试 USDT。
+> 💡 **模拟盘建议**：首次运行时务必使用 `EXCHANGE_NETWORK=testnet`，
+> 到 [OKX 模拟盘](https://www.okx.com) 注册模拟账户获取 API Key。
 
 ### 3. 启动服务
 
 ```bash
-# 测试网模式（推荐先测试）
+# 模拟盘模式（推荐先测试）
 npm start
 # 或
 npm run start:testnet
@@ -115,10 +117,10 @@ curl http://localhost:3000/health
 ```json
 {
   "status": "ok",
-  "exchange": "BYBIT",
+  "exchange": "OKX",
   "network": "TESTNET",
   "orderType": "market",
-  "serverTime": { "retCode": 0, "result": { "timeSecond": "1711440000" } },
+  "serverTime": { "code": "0", "data": [{ "ts": "1711440000000" }] },
   "accountStatus": "USDT 余额: $10000.00",
   "allowedSymbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 }
@@ -199,34 +201,38 @@ message = '{"signal": "{{strategy.order.alert_message}}", "symbol": "{{ticker}}"
 
 ### 切换方式
 
-通过环境变量 `EXCHANGE_NETWORK` 控制：
+OKX 模拟盘与实盘使用相同的 API 端点 `https://www.okx.com`，凭据区分：
 
-| 环境变量值 | 模式 | BASE URL | 说明 |
-|-----------|------|----------|------|
-| `testnet`（默认） | 🟡 测试网 | `api-testnet.bybit.com` | 无实际资金风险 |
-| `production` | 🔴 实盘 | `api.bybit.com` | 真实资金交易 |
+| 环境变量值 | 模式 | 说明 |
+|-----------|------|------|
+| `testnet`（默认） | 🟡 模拟盘 | 使用 OKX 模拟账户的 API Key（demo 账户） |
+| `production` | 🔴 实盘 | 使用主账户的 API Key（真实资金） |
 
 ### 分别启动
 
 ```bash
-# 测试网（推荐用于验证链路）
-NODE_ENV=testnet npm start
+# 模拟盘（推荐用于验证链路）
+EXCHANGE_NETWORK=testnet npm start
 
 # 实盘
-NODE_ENV=production npm start
+EXCHANGE_NETWORK=production npm start
 
 # 或使用预设脚本
 npm run start:testnet
 npm run start:live
 ```
 
-### 测试网设置步骤
+### 模拟盘设置步骤
 
-1. 访问 [Bybit Testnet](https://testnet.bybit.com/) 注册测试账户
-2. 创建 API Key（设置 → API）
-3. 获取测试 USDT（水龙头会空投测试资金）
-4. 在 `.env` 中填入测试网 API Key
-5. 启动服务并发送测试警报
+1. 访问 [OKX](https://www.okx.com) 登录或注册
+2. 右上角头像 → 「模拟交易」进入模拟盘环境
+3. 在模拟盘环境中创建 API Key（账户 → API）
+4. 设置 Passphrase，获取 Key 和 Secret
+5. 在 Secrets 页面添加这三个凭据
+6. 在 `.env` 中设置 `EXCHANGE_NETWORK=testnet`
+7. 启动服务并发送测试警报
+
+> ⚠️ 注意：模拟盘 API Key 必须在 **模拟盘环境** 中创建，主账户的 Key 无法用于模拟盘。
 
 ## 📦 订单类型支持
 
@@ -256,18 +262,17 @@ DEFAULT_ORDER_TYPE=market   # 默认使用市价单
 
 > ⚠️ 限价单注意事项：
 > - 必须同时提供 `price` 字段
-> - 限价单默认为 PostOnly 模式（只做 maker，不吃单）
 > - 可能因价格未触及而无法成交
 
 ## 🔐 安全注意事项
 
 ### 1. API Key 保护
-- **必须** 通过团队 Secrets 页面配置 `BYBIT_API_KEY` 和 `BYBIT_API_SECRET`
+- **必须** 通过团队 Secrets 页面配置 `OKX_API_KEY`、`OKX_API_SECRET`、`OKX_API_PASSPHRASE`
 - `.env` 文件已加入 `.gitignore`，切勿提交到 Git
 - 定期轮换 API Key
 
 ### 2. IP 白名单
-在 Bybit API 管理页面，将部署服务器的 IP 添加到白名单。
+在 OKX API 管理页面，将部署服务器的 IP 添加到白名单。
 
 ### 3. Webhook 密钥
 - 设置一个足够复杂的 `WEBHOOK_SECRET`（建议 32 位以上随机字符串）
@@ -316,9 +321,9 @@ curl -X POST http://localhost:3000/webhook \
 [Webhook] 📩 收到新警报
 [Webhook] ✅ 信号验证通过: longE BTCUSDT
 [Webhook] 🚀 执行开仓: Buy BTCUSDT
-[Bybit] ⚙️ 杠杆已设置: BTCUSDT 1x (isolated)
-[Bybit] 📤 下单: [BTCUSDT] Buy 0.001 @ market
-[Bybit] ✅ 订单成功: orderId=xxxxxx
+[OKX] ⚙️ 杠杆已设置: BTC-USDT 1x (isolated)
+[OKX] 📤 下单: [BTC-USDT] buy 0.001 @ market
+[OKX] ✅ 订单成功: orderId=123456789
 [Webhook] ✅ 交易完成
 ```
 
@@ -330,10 +335,10 @@ services/
 ├── package.json                    ← Node.js 依赖
 ├── .env.example                    ← 环境变量模板
 ├── config/
-│   ├── exchange.json               ← 交易所连接默认配置
+│   ├── exchange.json               ← 交易所连接默认配置（OKX）
 │   └── index.js                    ← 配置管理器（环境变量 + 默认值）
 ├── exchange/
-│   ├── bybit.js                    ← Bybit V5 API 封装
+│   ├── okx.js                      ← OKX V5 API 封装
 │   └── index.js                    ← 交易所工厂（单例）
 ├── signals/
 │   └── parser.js                   ← TradingView 信号解析器
@@ -344,11 +349,13 @@ services/
 
 ## 🔮 支持的交易对
 
-| 交易对 | 最小交易量 | 精度 |
-|--------|-----------|------|
-| BTCUSDT | 0.001 | 小数点后 2 位 |
-| ETHUSDT | 0.01 | 小数点后 2 位 |
-| SOLUSDT | 0.1 | 小数点后 3 位 |
+OKX 使用带连字符的交易对格式（合约内部自动转换）：
+
+| 代码格式 | OKX 合约 ID | 最小交易量 | 精度 |
+|---------|-------------|-----------|------|
+| BTCUSDT | BTC-USDT | 0.001 | 小数点后 1 位 |
+| ETHUSDT | ETH-USDT | 0.01 | 小数点后 1 位 |
+| SOLUSDT | SOL-USDT | 0.1 | 小数点后 2 位 |
 
 可在 `config/exchange.json` 的 `symbols` 字段中扩展更多交易对。
 
