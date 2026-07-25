@@ -1,29 +1,34 @@
 # LE VAN DO® OKX 原生交易机器人
 
-直接通过 **OKX WebSocket 行情数据**驱动交易，**无需 TradingView**。
+直接通过 **OKX REST API 轮询行情数据**驱动交易，**无需 WebSocket，无需 TradingView**。
 将 LE VAN DO® Swing Signals 策略从 Pine Script v5 移植到 Python。
 
 ## 架构
 
 ```
-OKX WebSocket (实时 K 线)
-       │  channel: candle1m
+OKX REST API (轮询 K 线, 每 15 分钟)
+       │  GET /api/v5/market/candles?bar=15m&limit=100
        ▼
-MarketDataSubscriber ─── CandleAggregator (tfmult=18)
-       │                       ↓ 聚合为高周期 K 线
-       │                  LeVanDoStrategy (状态机)
-       │                       ↓ 信号 (longE/shortE/TP/SL)
-       │                  SignalHandler
-       │                       ↓
-OkxOrderManager ──────── OKX REST API (下单)
+RestApiDataFeed ──── CandleAggregator (tfmult=18)
+       │                  ↓ 聚合为高周期 K 线
+       │             LeVanDoStrategy (状态机)
+       │                  ↓ 信号 (longE/shortE/TP/SL)
+       │             SignalHandler
+       │                  ↓
+OkxOrderManager ──── OKX REST API (下单)
 ```
+
+> **为什么用 REST API 而非 WebSocket？** 东京服务器 IP 无法连接 OKX WebSocket（被封锁），
+> REST API 使用标准 HTTPS，不易被封锁，且实现更简单可靠。
+>
+> 如果 REST API 也失败，会自动回退到模拟数据源（仅 DRY_RUN 模式）。
 
 ## 模块说明
 
 | 文件 | 说明 |
 |------|------|
 | `config.py` | 配置管理器 — 从环境变量读取所有参数 |
-| `market_data.py` | OKX WebSocket 行情订阅 + K 线聚合 |
+| `market_data.py` | OKX REST API 轮询 + K 线聚合 + 回退到模拟数据 |
 | `indicators.py` | 技术指标计算 (HA/Renko/EMA/ATR/RSI/Sideways) |
 | `strategy.py` | LE VAN DO 策略引擎 — 状态机 |
 | `order_manager.py` | OKX REST API 订单执行器 |

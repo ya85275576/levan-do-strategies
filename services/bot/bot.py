@@ -2,16 +2,20 @@
 """
 LE VAN DO® OKX 原生交易机器人 — 主程序
 
-直接通过 OKX WebSocket 行情数据驱动交易，无需 TradingView。
+直接通过 OKX REST API 轮询行情数据驱动交易，无需 WebSocket，无需 TradingView。
 将 LE VAN DO® Swing Signals 策略从 Pine Script 移植到 Python。
 支援多交易对并行运行（50 个主流币种 USDT 交易对）。
 
 运行模式:
-  DRY_RUN=true  (默认) — 模拟模式，仅记录日志（生成模拟 K 线数据）
+  DRY_RUN=true  (默认) — 模拟模式，REST API 获取真实行情，但仅记录日志不下单
   DRY_RUN=false        — 实盘模式，实际连接交易所并发送 API 请求
 
+数据源优先级:
+  1. REST API 轮询（默认，避免东京服务器 IP 被 WebSocket 封锁的问题）
+  2. 模拟数据源（REST API 不可用时回退）
+
 架构:
-  market_data.py  ←  OKX WebSocket / 模拟数据源 (15m K 线)
+  market_data.py  ←  OKX REST API / 模拟数据源 (15m K 线，轮询)
        ↓ 聚合 (tfmult=18)
   strategy.py     ←  策略引擎 x 50 (每交易对独立实例)
        ↓ 信号
@@ -36,7 +40,13 @@ from typing import Dict, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
-from market_data import Candle, CandleAggregator, MarketDataSubscriber
+from market_data import (
+    Candle,
+    CandleAggregator,
+    MarketDataSubscriber,
+    RestApiDataFeed,
+    SimulatedDataFeed,
+)
 from strategy import (
     CandleData,
     LeVanDoStrategy,
@@ -421,8 +431,9 @@ class OkxTradingBot:
             )
             self.trading_units[symbol] = unit
 
-        # 市场数据
-        self.subscriber: Optional[MarketDataSubscriber] = None
+        # 市场数据（REST API 轮询，失败时回退到模拟数据）
+        self.subscriber: Optional[RestApiDataFeed] = None
+        self._simulated_feed: Optional[SimulatedDataFeed] = None
 
         # 运行控制
         self._running = False
@@ -485,29 +496,109 @@ class OkxTradingBot:
 
         logger.info("╚══════════════════════════════════════════════════════════╝")
 
-        # 初始化市场数据订阅器
-        self.subscriber = MarketDataSubscriber(
-            ws_url=self.config["ws_url"],
+        # ---- 数据源：优先使用 REST API，失败则回退到模拟数据 ----
+        rest_feed = RestApiDataFeed(
             symbols=self.symbols,
             base_timeframe_sec=self.base_tf_sec,
             on_candle=self._on_base_candle,
-            dry_run=self.config["dry_run"],
+            rest_url=self.config["rest_url"],
         )
+        self.subscriber = rest_feed
 
-        # 异步运行
+        # 尝试 REST API 数据源
+        rest_success = False
         try:
-            await self.subscriber.run()
+            logger.info("📡 正在通过 REST API 获取初始 K 线数据...")
+            # 在后台运行轮询循环，先进行一次初始加载
+            feed_task = asyncio.create_task(rest_feed.run())
+
+            # 等待初始加载完成（通过检测 _initial_load_done 标记）
+            # RestApiDataFeed.run() 内部会立即执行 _poll_all() 作为初始加载
+            rest_success = await self._wait_for_rest_init(rest_feed, timeout=30)
+
+            if rest_success:
+                logger.info("✅ REST API 行情数据源正常运行")
+                # 等待 feed_task 完成（它会持续轮询直到停止）
+                await feed_task
+            else:
+                # REST API 失败，取消轮询任务
+                feed_task.cancel()
+                try:
+                    await feed_task
+                except asyncio.CancelledError:
+                    pass
+                await rest_feed.close()
+                raise ConnectionError("REST API 初始加载未获取到数据")
+
+        except (ConnectionError, Exception) as e:
+            logger.warning(f"⚠️ REST API 行情不可用: {e}")
+
+            if self.config["dry_run"]:
+                logger.warning("🔄 回退到模拟数据源...")
+                self.subscriber = None
+
+                sim_feed = SimulatedDataFeed(
+                    symbols=self.symbols,
+                    base_timeframe_sec=self.base_tf_sec,
+                )
+                self._simulated_feed = sim_feed
+
+                try:
+                    await sim_feed.run(on_candle=self._on_base_candle)
+                except asyncio.CancelledError:
+                    logger.info("模拟数据源收到停止信号")
+            else:
+                logger.error("❌ 非模拟模式下 REST API 行情不可用，机器人停止")
+                raise
         except asyncio.CancelledError:
             logger.info("机器人收到停止信号")
         finally:
             await self.stop()
+
+    async def _wait_for_rest_init(
+        self, feed: RestApiDataFeed, timeout: float = 30
+    ) -> bool:
+        """
+        等待 REST API 数据源完成初始加载。
+
+        首次调用后先 yield 控制权，让 feed_task 有机会开始执行。
+        检查策略：每 0.5 秒检测一次：
+          - 初始加载已完成（_initial_load_done），凭 latest_candles 判定成败
+          - 已有 K 线数据到达（无需等待初始化标记）
+        """
+        # 先 yield 一次，让 create_task 调度的 run() 有机会启动
+        await asyncio.sleep(0)
+
+        waited = 0.0
+        check_interval = 0.5
+
+        while waited < timeout:
+            # 初始加载已完成
+            if feed._initial_load_done:
+                return len(feed.latest_candles) > 0
+
+            # 已有数据到达（无需等待完整加载）
+            if len(feed.latest_candles) > 0:
+                return True
+
+            await asyncio.sleep(check_interval)
+            waited += check_interval
+
+        # 超时
+        logger.warning(f"[REST] 初始加载超时 ({timeout}s)")
+        return len(feed.latest_candles) > 0
 
     async def stop(self):
         """停止机器人"""
         self._running = False
 
         if self.subscriber:
-            await self.subscriber.stop()
+            await self.subscriber.close()
+            self.subscriber = None
+
+        if self._simulated_feed:
+            self._simulated_feed.stop()
+            self._simulated_feed = None
 
         await self.order_manager.close()
 

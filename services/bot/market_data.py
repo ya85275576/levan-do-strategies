@@ -310,6 +310,273 @@ class SimulatedDataFeed:
         logger.info("🧪 模拟数据源已停止")
 
 
+class RestApiDataFeed:
+    """
+    REST API 行情数据源
+
+    通过轮询 OKX REST API 获取 K 线数据，替代 WebSocket 订阅。
+    适用于 WebSocket 被 IP 封锁的场景（如东京服务器）。
+
+    轮询策略:
+      - 首次启动：获取每个交易对最近 100 根 K 线，按时间正序喂入
+      - 定期轮询：每隔 base_timeframe_sec（默认 900s=15m）获取最新 K 线，自动去重
+      - 并发控制：使用 asyncio.Semaphore 限制并发请求数
+
+    用法:
+        feed = RestApiDataFeed(
+            symbols=["BTC-USDT", "ETH-USDT", ...],
+            base_timeframe_sec=900,
+            on_candle=lambda symbol, candle: print(symbol, candle),
+        )
+        await feed.run()
+    """
+
+    # OKX REST API 基础 URL（公开行情端点，无需认证）
+    REST_URL = "https://www.okx.com"
+
+    # OKX bar 参数映射
+    BAR_MAP = {
+        60: "1m",
+        180: "3m",
+        300: "5m",
+        900: "15m",
+        1800: "30m",
+        3600: "1H",
+        7200: "2H",
+        14400: "4H",
+        21600: "6H",
+        28800: "8H",
+        43200: "12H",
+        86400: "1D",
+        604800: "1W",
+        2592000: "1M",
+    }
+
+    def __init__(
+        self,
+        symbols: List[str],
+        base_timeframe_sec: int = 900,
+        on_candle: Optional[Callable[[str, Candle], None]] = None,
+        max_concurrent: int = 20,
+        rest_url: Optional[str] = None,
+    ):
+        """
+        :param symbols: 交易对列表
+        :param base_timeframe_sec: 基础 K 线周期（秒），同时也是轮询间隔
+        :param on_candle: K 线更新回调 (symbol, candle)
+        :param max_concurrent: 最大并发请求数
+        :param rest_url: REST API 基础 URL（默认 https://www.okx.com）
+        """
+        self.symbols = symbols
+        self.base_timeframe_sec = base_timeframe_sec
+        self.on_candle = on_candle
+        self.rest_url = (rest_url or self.REST_URL).rstrip("/")
+
+        # 并发控制
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+
+        # HTTP 会话
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._running = False
+
+        # 去重跟踪：记录每个交易对已处理的最新时间戳
+        self._last_ts: Dict[str, int] = {}
+
+        # 初始加载标记
+        self._initial_load_done = False
+
+        # 最新 K 线缓存: {symbol: Candle}
+        self.latest_candles: Dict[str, Candle] = {}
+
+        logger.info(
+            f"📡 [REST] 数据源初始化: {len(symbols)} 个交易对, "
+            f"轮询间隔={base_timeframe_sec}s, bar={self._get_bar()}"
+        )
+
+    def _get_bar(self) -> str:
+        """获取对应周期的 OKX bar 参数"""
+        available = sorted(self.BAR_MAP.keys())
+        best = available[0]
+        for sec in available:
+            if sec <= self.base_timeframe_sec:
+                best = sec
+            else:
+                break
+        return self.BAR_MAP[best]
+
+    async def _ensure_session(self):
+        """确保 HTTP 会话已创建"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={"Accept": "application/json"},
+            )
+
+    async def _fetch_candles(self, symbol: str, limit: int = 100) -> List[Candle]:
+        """
+        获取单个交易对的 K 线数据
+
+        API: GET https://www.okx.com/api/v5/market/candles
+        文档: https://www.okx.com/docs-v5/zh/#rest-api-market-data-get-candlesticks
+        """
+        await self._ensure_session()
+
+        bar = self._get_bar()
+        params = {"instId": symbol, "bar": bar, "limit": str(limit)}
+
+        async with self._semaphore:
+            try:
+                async with self._session.get(
+                    f"{self.rest_url}/api/v5/market/candles",
+                    params=params,
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"[REST] {symbol} HTTP {resp.status}: {text[:200]}")
+                        return []
+
+                    data = await resp.json()
+                    if data.get("code") != "0":
+                        logger.error(
+                            f"[REST] {symbol} API 错误: "
+                            f"code={data.get('code')}, msg={data.get('msg')}"
+                        )
+                        return []
+
+                    candles = []
+                    for raw in data.get("data", []):
+                        candle = self._parse_candle(raw)
+                        if candle:
+                            candles.append(candle)
+
+                    return candles
+
+            except asyncio.TimeoutError:
+                logger.warning(f"[REST] {symbol} 请求超时")
+                return []
+            except aiohttp.ClientError as e:
+                logger.warning(f"[REST] {symbol} 请求异常: {e}")
+                return []
+            except Exception as e:
+                logger.error(f"[REST] {symbol} 未知错误: {e}", exc_info=True)
+                return []
+
+    def _parse_candle(self, raw: list) -> Optional[Candle]:
+        """解析 OKX K 线数据（与 WebSocket 相同的格式）"""
+        try:
+            if isinstance(raw, list) and len(raw) >= 9:
+                return Candle(
+                    timestamp=int(raw[0]),
+                    open_p=float(raw[1]),
+                    high=float(raw[2]),
+                    low=float(raw[3]),
+                    close=float(raw[4]),
+                    volume=float(raw[5]),
+                    confirm=raw[8] == "1",
+                )
+            return None
+        except (ValueError, IndexError) as e:
+            logger.warning(f"[REST] K 线解析失败: {raw} - {e}")
+            return None
+
+    async def _poll_all(self) -> bool:
+        """
+        轮询所有交易对的最新 K 线
+
+        Returns:
+            bool: 是否至少有一个交易对获取到数据
+        """
+        limit = 100  # 每次获取 100 根，OKX 限制最大 100
+
+        # 并发发起所有请求
+        tasks = {symbol: self._fetch_candles(symbol, limit) for symbol in self.symbols}
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        total_new = 0
+        symbols_with_data = 0
+
+        for symbol, result in zip(self.symbols, results):
+            if isinstance(result, Exception):
+                logger.error(f"[REST] {symbol} 轮询异常: {result}")
+                continue
+
+            candles = result  # OKX 返回倒序（最新在前）
+            if not candles:
+                continue
+
+            symbols_with_data += 1
+
+            # 反转成正序（最旧在前），以便聚合器正确累加
+            candles.reverse()
+
+            # 过滤已处理过的 K 线（按时间戳去重）
+            last_ts = self._last_ts.get(symbol, 0)
+            new_candles = [c for c in candles if c.timestamp > last_ts]
+
+            if new_candles:
+                for candle in new_candles:
+                    self.latest_candles[symbol] = candle
+                    if self.on_candle:
+                        self.on_candle(symbol, candle)
+                total_new += len(new_candles)
+
+                # 更新最新时间戳
+                self._last_ts[symbol] = max(c.timestamp for c in new_candles)
+
+        if not self._initial_load_done:
+            if symbols_with_data > 0:
+                logger.info(
+                    f"[REST] 初始加载完成: {symbols_with_data}/{len(self.symbols)} "
+                    f"个交易对有数据, 共 {total_new} 根 K 线"
+                )
+            else:
+                logger.error("[REST] 初始加载失败: 所有交易对均未获取到数据")
+            self._initial_load_done = True
+        else:
+            if total_new > 0:
+                logger.debug(
+                    f"[REST] 轮询完成: {symbols_with_data} 个交易对, "
+                    f"新增 {total_new} 根 K 线"
+                )
+
+        return symbols_with_data > 0
+
+    async def run(self):
+        """运行轮询循环"""
+        self._running = True
+
+        logger.info(
+            f"📡 [REST] 行情数据源已启动 ({len(self.symbols)} 个交易对, "
+            f"轮询间隔={self.base_timeframe_sec}s, bar={self._get_bar()})"
+        )
+
+        # 首次加载：获取所有历史 K 线
+        logger.info("[REST] 首次加载历史 K 线 (limit=100)...")
+        has_data = await self._poll_all()
+
+        if not has_data:
+            logger.warning("[REST] 首次加载未获取到数据，将在下一轮重试")
+
+        # 定期轮询
+        while self._running:
+            await asyncio.sleep(self.base_timeframe_sec)
+            if not self._running:
+                break
+            await self._poll_all()
+
+    def stop(self):
+        """停止轮询"""
+        self._running = False
+        logger.info("[REST] 行情数据源已停止")
+
+    async def close(self):
+        """关闭 HTTP 会话"""
+        self.stop()
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+
 class MarketDataSubscriber:
     """
     OKX WebSocket 行情订阅器
