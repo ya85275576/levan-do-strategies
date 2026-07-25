@@ -1,0 +1,64 @@
+{
+  "exchange": "BYBIT",
+
+  "network": {
+    "testnet": {
+      "baseUrl": "https://api-testnet.bybit.com",
+      "wsUrl": "wss://stream-testnet.bybit.com/v5/public/linear",
+      "description": "Bybit 测试网 - 用于验证交易链路，无实际资金风险"
+    },
+    "production": {
+      "baseUrl": "https://api.bybit.com",
+      "wsUrl": "wss://stream.bybit.com/v5/public/linear",
+      "description": "Bybit 实盘 - 真实资金交易"
+    }
+  },
+
+  "symbols": {
+    "BTCUSDT": {
+      "minQty": 0.001,
+      "qtyStep": 0.001,
+      "pricePrecision": 2,
+      "description": "Bitcoin / USDT 永续合约"
+    },
+    "ETHUSDT": {
+      "minQty": 0.01,
+      "qtyStep": 0.01,
+      "pricePrecision": 2,
+      "description": "Ethereum / USDT 永续合约"
+    },
+    "SOLUSDT": {
+      "minQty": 0.1,
+      "qtyStep": 0.1,
+      "pricePrecision": 3,
+      "description": "Solana / USDT 永续合约"
+    }
+  },
+
+  "orderTypes": {
+    "market": {
+      "description": "市价单 - 以当前市场最优价格立即成交",
+      "bybitValue": "Market",
+      "supported": true
+    },
+    "limit": {
+      "description": "限价单 - 以指定或更优价格成交，可能部分成交或未成交",
+      "bybitValue": "Limit",
+      "supported": true
+    }
+  },
+
+  "riskLimits": {
+    "maxPositionSize": 10000,
+    "maxDailyLoss": 500,
+    "maxLeverage": 10,
+    "minOrderIntervalMs": 1000
+  },
+
+  "tradingViewAlertFormats": {
+    "longE":  { "action": "open",  "side": "Buy",  "description": "多头开仓信号" },
+    "shortE": { "action": "open",  "side": "Sell", "description": "空头开仓信号" },
+    "longX":  { "action": "close", "side": "Buy",  "description": "多头平仓信号" },
+    "shortX": { "action": "close", "side": "Sell", "description": "空头平仓信号" }
+  }
+}
