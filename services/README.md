@@ -485,3 +485,55 @@ npm run start:mt5:live    # MT5 實盤
 
 > **LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X**
 > 对接策略版本: 7.9-X（更多版本见 `configs/` 和 `strategies/`）
+
+---
+
+## 🤖 OKX 原生交易机器人（新增）
+
+> 直接通过 OKX WebSocket 行情数据驱动交易，**无需 TradingView**。
+> 将 LE VAN DO® Swing Signals 策略从 Pine Script 移植到 Python。
+
+### 架构
+
+```
+OKX WebSocket (实时 K 线)
+       │  channel: candle1m
+       ▼
+services/bot/
+       │
+       ├── market_data.py    ← 订阅实时 K 线 + 聚合高周期 (tfmult=18)
+       ├── strategy.py       ← 策略引擎 (HA/Renko/EMA/ATR/RSI 状态机)
+       ├── order_manager.py  →  OKX REST API 下单 (支持 DRY_RUN)
+       └── bot.py            ← 主程序
+```
+
+### 与既有 Webhook 服务的关系
+
+| 特性 | Webhook 服务 (webhook/server.js) | 原生机器人 (bot/bot.py) |
+|------|--------------------------------|----------------------|
+| **数据源** | TradingView 警报 HTTP POST | OKX WebSocket 实时行情 |
+| **运行方式** | Node.js (Express) | Python (asyncio) |
+| **策略执行** | TradingView Pine Script | Python 移植策略引擎 |
+| **下单后端** | OKX REST (okx.js) | OKX REST (自实现) |
+| **依赖** | 需要 TradingView 账号 | 完全自主运行 |
+| **模拟模式** | DRY_RUN=true | DRY_RUN=true |
+
+两者可同时运行，共享同一组 OKX API 凭据，互不干扰。
+
+### 快速开始
+
+```bash
+cd services/bot
+pip install -r requirements.txt
+
+# 模拟模式（默认）
+python bot.py
+
+# 实盘模式
+DRY_RUN=false python bot.py
+
+# 或使用 PM2
+pm2 start ecosystem.config.js
+```
+
+详情请参阅 [`bot/README.md`](bot/README.md)。
