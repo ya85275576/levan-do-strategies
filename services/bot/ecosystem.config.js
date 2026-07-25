@@ -27,28 +27,30 @@ module.exports = {
             // 环境变量（默认：测试网 / 模拟模式）
             env: {
                 NODE_ENV: 'development',
+                PYTHONUNBUFFERED: '1',
                 EXCHANGE_NETWORK: 'testnet',
                 DRY_RUN: 'true',
                 LOG_LEVEL: 'INFO',
                 SETUP_TYPE: 'Open/Close',
                 TPS_TYPE: 'Trailing',
                 SIDEWAYS_FILTER: 'No Filtering',
-                TRADING_SYMBOL: 'BTC-USDT',
-                BASE_TIMEFRAME_MIN: '1',
+                TRADING_SYMBOLS: 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,DOGE-USDT,ADA-USDT,AVAX-USDT,DOT-USDT,LINK-USDT,MATIC-USDT,UNI-USDT,SHIB-USDT,LTC-USDT,BCH-USDT,ATOM-USDT,ETC-USDT,XLM-USDT,TRX-USDT,FIL-USDT,APT-USDT,ARB-USDT,OP-USDT,SUI-USDT,PEPE-USDT,INJ-USDT,TIA-USDT,SEI-USDT,RUNE-USDT,FET-USDT,GRT-USDT,NEAR-USDT,ICP-USDT,RENDER-USDT,IMX-USDT,MKR-USDT,AAVE-USDT,CRV-USDT,SNX-USDT,COMP-USDT,EOS-USDT,ALGO-USDT,FLOW-USDT,SAND-USDT,MANA-USDT,AXS-USDT,THETA-USDT,FTM-USDT,CVX-USDT,1INCH-USDT,STX-USDT',
+                BASE_TIMEFRAME_MIN: '15',
                 TF_MULT: '18',
             },
 
             // 实盘环境（使用 --env production）
             env_production: {
                 NODE_ENV: 'production',
+                PYTHONUNBUFFERED: '1',
                 EXCHANGE_NETWORK: 'production',
                 DRY_RUN: 'false',
                 LOG_LEVEL: 'INFO',
                 SETUP_TYPE: 'Open/Close',
                 TPS_TYPE: 'Trailing',
                 SIDEWAYS_FILTER: 'No Filtering',
-                TRADING_SYMBOL: 'BTC-USDT',
-                BASE_TIMEFRAME_MIN: '1',
+                TRADING_SYMBOLS: 'BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT,DOGE-USDT,ADA-USDT,AVAX-USDT,DOT-USDT,LINK-USDT,MATIC-USDT,UNI-USDT,SHIB-USDT,LTC-USDT,BCH-USDT,ATOM-USDT,ETC-USDT,XLM-USDT,TRX-USDT,FIL-USDT,APT-USDT,ARB-USDT,OP-USDT,SUI-USDT,PEPE-USDT,INJ-USDT,TIA-USDT,SEI-USDT,RUNE-USDT,FET-USDT,GRT-USDT,NEAR-USDT,ICP-USDT,RENDER-USDT,IMX-USDT,MKR-USDT,AAVE-USDT,CRV-USDT,SNX-USDT,COMP-USDT,EOS-USDT,ALGO-USDT,FLOW-USDT,SAND-USDT,MANA-USDT,AXS-USDT,THETA-USDT,FTM-USDT,CVX-USDT,1INCH-USDT,STX-USDT',
+                BASE_TIMEFRAME_MIN: '15',
                 TF_MULT: '18',
             },
 
