@@ -425,9 +425,10 @@ class RestApiDataFeed:
         params = {"instId": symbol, "bar": bar, "limit": str(limit)}
 
         async with self._semaphore:
-            # 速率限制：每个请求间延迟 30ms，避免 OKX 429 限流
-            # OKX 公开 API 限制：20 次请求 / 2 秒
-            await asyncio.sleep(0.03)
+            # 速率限制：每个请求间延迟 100ms，避免 OKX 429 限流
+            # OKX 公开 API 限制：20 次请求 / 2 秒（10 req/s）
+            # 50 交易对 * 100ms = 5s 总耗时 ≈ 10 req/s，符合限制
+            await asyncio.sleep(0.10)
 
             try:
                 async with self._session.get(
