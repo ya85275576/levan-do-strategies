@@ -46,6 +46,9 @@ export function getConfig() {
     apiSecret: process.env.OKX_API_SECRET || '',
     apiPassphrase: process.env.OKX_API_PASSPHRASE || '',
 
+    // 模拟模式（不实际发送 API 请求）
+    dryRun: (process.env.DRY_RUN || 'false').toLowerCase() === 'true',
+
     // Webhook 安全
     webhookSecret: process.env.WEBHOOK_SECRET || '',
 
@@ -82,17 +85,17 @@ export function validateConfig() {
   const cfg = getConfig();
   const errors = [];
 
-  if (!cfg.apiKey) {
-    errors.push('OKX_API_KEY 未配置 — 请在 Secrets 页面添加');
-  }
-  if (!cfg.apiSecret) {
-    errors.push('OKX_API_SECRET 未配置 — 请在 Secrets 页面添加');
-  }
-  if (!cfg.apiPassphrase) {
-    errors.push('OKX_API_PASSPHRASE 未配置 — 请在 Secrets 页面添加（创建 API Key 时设置）');
-  }
-  if (!cfg.webhookSecret) {
-    errors.push('WEBHOOK_SECRET 未配置 — 请设置一个随机密钥用于 TradingView 请求验证');
+  // 模拟模式下不强制要求 API 凭据和 Webhook 密钥
+  if (cfg.dryRun) {
+    if (!cfg.apiKey)       console.warn('[配置] ⚠️ 模拟模式: OKX_API_KEY 未配置 — 以占位值运行');
+    if (!cfg.apiSecret)    console.warn('[配置] ⚠️ 模拟模式: OKX_API_SECRET 未配置 — 以占位值运行');
+    if (!cfg.apiPassphrase) console.warn('[配置] ⚠️ 模拟模式: OKX_API_PASSPHRASE 未配置 — 以占位值运行');
+    if (!cfg.webhookSecret) console.warn('[配置] ⚠️ 模拟模式: WEBHOOK_SECRET 未配置 — 以占位值运行');
+  } else {
+    if (!cfg.apiKey)        errors.push('OKX_API_KEY 未配置 — 请在 Secrets 页面添加');
+    if (!cfg.apiSecret)     errors.push('OKX_API_SECRET 未配置 — 请在 Secrets 页面添加');
+    if (!cfg.apiPassphrase) errors.push('OKX_API_PASSPHRASE 未配置 — 请在 Secrets 页面添加（创建 API Key 时设置）');
+    if (!cfg.webhookSecret) errors.push('WEBHOOK_SECRET 未配置 — 请设置一个随机密钥用于 TradingView 请求验证');
   }
 
   const validOrderTypes = Object.keys(cfg.orderTypes);

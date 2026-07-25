@@ -62,8 +62,9 @@ export function parseSignal(message) {
   }
 
   // ---- 3. 匹配信号格式 ----
-  // 支持的标准格式
-  const signalKey = rawSignal.toLowerCase();
+  // 标准信号键 (longE/shortE/longX/shortX)
+  const supportedSignals = Object.keys(signalFormats);
+  const signalLC = rawSignal.toLowerCase();
 
   // 兼容旧版 Pine Script 的 alert_message 字符串
   const legacyMapping = {
@@ -83,9 +84,27 @@ export function parseSignal(message) {
     'short sl': 'sl',
   };
 
-  let matchedSignal = signalFormats[signalKey]
-    ? signalKey
-    : legacyMapping[signalKey] || null;
+  let matchedSignal = null;
+
+  // 1. 精确匹配（如 "longE"）
+  if (supportedSignals.includes(rawSignal)) {
+    matchedSignal = rawSignal;
+  }
+
+  // 2. Legacy 映射匹配（如 "Long Entry" → "longE"）
+  if (!matchedSignal) {
+    matchedSignal = legacyMapping[signalLC] || null;
+  }
+
+  // 3. 大小写不敏感的 camelCase 匹配（如 "Longe" → "longE"）
+  if (!matchedSignal) {
+    for (const key of supportedSignals) {
+      if (key.toLowerCase() === signalLC) {
+        matchedSignal = key;
+        break;
+      }
+    }
+  }
 
   if (!matchedSignal) {
     return {
@@ -96,12 +115,16 @@ export function parseSignal(message) {
   }
 
   // ---- 4. 合成结构化信号 ----
-  const signalDef = signalFormats[matchedSignal];
+  const signalDef = signalFormats[matchedSignal] || {};
+
+  // TP/SL 信号（来自 legacy 映射，不在 signalFormats 中）
+  const isTpSlSignal = ['tp1', 'tp2', 'tp3', 'sl'].includes(matchedSignal);
+
   const signal = {
     type: matchedSignal,
-    action: signalDef.action,      // 'open' | 'close'
-    side: signalDef.side,          // 'Buy' | 'Sell'
-    description: signalDef.description,
+    action: isTpSlSignal ? 'exit' : (signalDef.action || 'unknown'),
+    side: signalDef.side || 'unknown',
+    description: signalDef.description || (isTpSlSignal ? `止盈止损信号: ${matchedSignal}` : '未知信号'),
 
     // 从消息中提取的交易参数
     symbol: (parsed.symbol || 'BTCUSDT').toUpperCase(),
