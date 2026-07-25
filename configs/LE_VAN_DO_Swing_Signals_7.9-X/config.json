@@ -1,0 +1,501 @@
+{
+  "meta": {
+    "strategyId": "LE-VAN-DO-SWING-SIGNALS-7.9-X",
+    "strategyName": "LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X",
+    "version": "7.9-X",
+    "date": "2024.3.20",
+    "platform": "TradingView",
+    "language": "Pine Script v5",
+    "sourceFile": "strategies/LE_VAN_DO_Swing_Signals_7.9-X.pine",
+    "description": "基于多时间框架的 Swing 交易策略，支持 Open/Close 蜡烛图和 Renko 砖形图两种信号模式，配备三级止盈、ATR/Trailing/Options 三种止盈止损模式，以及 ATR/RSI 震荡过滤。",
+    "author": "TraderHalai",
+    "license": "MPL-2.0",
+    "tags": ["LE VAN DO", "Swing Signals", "Overlays", "TradingView", "Pine Script", "Multi-Timeframe"],
+    "exchange": "BYBIT",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+  },
+
+  "tradingMode": {
+    "description": "交易模式配置",
+    "TPSType": {
+      "value": "Trailing",
+      "type": "enum",
+      "options": ["ATR", "Trailing", "Options"],
+      "group": "交易模式",
+      "pineInput": "input.string",
+      "description": "止盈止损模式：ATR-基于ATR的动态止盈止损，Trailing-追踪止损，Options-仅开仓信号（手动管理出场）"
+    },
+    "setupType": {
+      "value": "Open/Close",
+      "type": "enum",
+      "options": ["Open/Close", "Renko"],
+      "group": "交易模式",
+      "pineInput": "input.string",
+      "description": "交易信号来源：Open/Close-基于K线收盘价突破开盘价，Renko-基于Renko砖形图的EMA交叉"
+    }
+  },
+
+  "filterSettings": {
+    "description": "入场过滤设置，用于筛选震荡行情以减少假信号",
+    "enableFilter": {
+      "value": true,
+      "type": "boolean",
+      "group": "回测日期过滤",
+      "pineInput": "input.bool",
+      "description": "启用回测日期范围过滤"
+    },
+    "fromDate": {
+      "value": "01 Jan 2023 00:00 +0300",
+      "type": "timestamp",
+      "group": "回测日期过滤",
+      "pineInput": "input.time",
+      "description": "回测开始日期"
+    },
+    "toDate": {
+      "value": "31 Dec 2099 00:00 +0300",
+      "type": "timestamp",
+      "group": "回测日期过滤",
+      "pineInput": "input.time",
+      "description": "回测结束日期"
+    },
+    "typefilter": {
+      "value": "No Filtering",
+      "type": "enum",
+      "options": [
+        "Filter with Atr",
+        "Filter with RSI",
+        "Atr or RSI",
+        "Atr and RSI",
+        "No Filtering",
+        "Entry Only in sideways market(By ATR or RSI)",
+        "Entry Only in sideways market(By ATR and RSI)"
+      ],
+      "group": "Strategy Options",
+      "pineInput": "input.string",
+      "description": "震荡过滤模式选择"
+    },
+    "rsiLength": {
+      "value": 7,
+      "type": "integer",
+      "min": 1,
+      "max": 100,
+      "group": "RSI Filterring",
+      "pineInput": "input.int",
+      "description": "RSI 计算周期"
+    },
+    "toplimitrsi": {
+      "value": 45,
+      "type": "integer",
+      "min": 0,
+      "max": 100,
+      "group": "RSI Filterring",
+      "pineInput": "input.int",
+      "description": "RSI 上限阈值（超买区），RSI高于此值视为超买"
+    },
+    "botlimitrsi": {
+      "value": 10,
+      "type": "integer",
+      "min": 0,
+      "max": 100,
+      "group": "RSI Filterring",
+      "pineInput": "input.int",
+      "description": "RSI 下限阈值（超卖区），RSI低于此值视为超卖"
+    },
+    "atrfiltLen": {
+      "value": 5,
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "group": "ATR Filterring",
+      "pineInput": "hardcoded",
+      "description": "ATR 过滤计算周期（当前为硬编码，如需可修改源码）"
+    },
+    "atrMaType": {
+      "value": "EMA",
+      "type": "enum",
+      "options": ["EMA", "SMA"],
+      "group": "ATR Filterring",
+      "pineInput": "hardcoded",
+      "description": "ATR 均线类型（当前为硬编码）"
+    },
+    "atrMaLen": {
+      "value": 5,
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "group": "ATR Filterring",
+      "pineInput": "hardcoded",
+      "description": "ATR 均线周期（当前为硬编码）"
+    }
+  },
+
+  "renkoSettings": {
+    "description": "Renko 砖形图信号设置，仅在 setupType='Renko' 时生效",
+    "EMA1_length": {
+      "value": 2,
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "group": "Renko Settings",
+      "pineInput": "input.int",
+      "description": "Renko EMA 快线周期（用于EMA交叉信号）"
+    },
+    "EMA2_length": {
+      "value": 10,
+      "type": "integer",
+      "min": 1,
+      "max": 500,
+      "group": "Renko Settings",
+      "pineInput": "input.int",
+      "description": "Renko EMA 慢线周期（用于EMA交叉信号）"
+    },
+    "atrLen": {
+      "value": 3,
+      "type": "integer",
+      "min": 1,
+      "max": 100,
+      "group": "Renko Settings",
+      "pineInput": "hardcoded",
+      "description": "ATR Renko 砖块大小（基于ATR），isATR=true 时生效"
+    },
+    "isATR": {
+      "value": true,
+      "type": "boolean",
+      "group": "Renko Settings",
+      "pineInput": "hardcoded",
+      "description": "Renko 类型：true=ATR Renko，false=Traditional Renko"
+    },
+    "tradLen1": {
+      "value": 1000,
+      "type": "integer",
+      "min": 1,
+      "max": 100000,
+      "group": "Renko Settings",
+      "pineInput": "hardcoded",
+      "description": "Traditional Renko 砖块大小（点数），isATR=false 时生效"
+    }
+  },
+
+  "riskManagement": {
+    "description": "风险管理参数",
+    "atrLength": {
+      "value": 20,
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "group": "Risk Management",
+      "pineInput": "hardcoded",
+      "description": "ATR 计算周期（用于计算止盈止损距离）"
+    },
+    "profitFactor": {
+      "value": 2.5,
+      "type": "float",
+      "min": 0.1,
+      "max": 20,
+      "step": 0.1,
+      "group": "Risk Management",
+      "pineInput": "hardcoded",
+      "description": "止盈倍数（止盈距离 = profitFactor × ATR）"
+    },
+    "stopFactor": {
+      "value": 1.0,
+      "type": "float",
+      "min": 0.1,
+      "max": 10,
+      "step": 0.1,
+      "group": "Risk Management",
+      "pineInput": "hardcoded",
+      "description": "止损倍数（止损距离 = stopFactor × ATR，当前代码中未直接使用此变量）"
+    },
+    "i_lxQtyTP1": {
+      "value": 50.0,
+      "type": "float",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "group": "Risk Management",
+      "pineInput": "input.float",
+      "description": "第一目标止盈（TP1）平仓百分比"
+    },
+    "i_lxQtyTP2": {
+      "value": 30.0,
+      "type": "float",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "group": "Risk Management",
+      "pineInput": "input.float",
+      "description": "第二目标止盈（TP2）平仓百分比"
+    },
+    "i_lxQtyTP3": {
+      "value": 20.0,
+      "type": "float",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "group": "Risk Management",
+      "pineInput": "input.float",
+      "description": "第三目标止盈（TP3）平仓百分比"
+    },
+    "default_qty_value": {
+      "value": 50,
+      "type": "integer",
+      "min": 1,
+      "max": 100,
+      "group": "Risk Management",
+      "pineInput": "strategy setting",
+      "description": "默认开仓仓位占比（策略 equity 百分比）"
+    },
+    "initial_capital": {
+      "value": 5000,
+      "type": "float",
+      "min": 100,
+      "group": "Risk Management",
+      "pineInput": "strategy setting",
+      "description": "初始资金"
+    },
+    "commission_value": {
+      "value": 0.02,
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.005,
+      "group": "Risk Management",
+      "pineInput": "strategy setting",
+      "description": "手续费率（百分比）"
+    }
+  },
+
+  "webhookMessages": {
+    "description": "Webhook 警报消息配置，用于自动化交易通知",
+    "i_leMsg": {
+      "value": "Long Entry",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头开仓消息"
+    },
+    "i_lxMsgSL": {
+      "value": "Long SL",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头止损消息"
+    },
+    "i_lxMsgTP1": {
+      "value": "Long TP1",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头 TP1 止盈消息"
+    },
+    "i_lxMsgTP2": {
+      "value": "Long TP2",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头 TP2 止盈消息"
+    },
+    "i_lxMsgTP3": {
+      "value": "Long TP3",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头 TP3 止盈消息"
+    },
+    "i_lxMsg": {
+      "value": "Long Exit",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "多头手动平仓消息"
+    },
+    "i_seMsg": {
+      "value": "Short Entry",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头开仓消息"
+    },
+    "i_sxMsgSL": {
+      "value": "Short SL",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头止损消息"
+    },
+    "i_sxMsgTP1": {
+      "value": "Short TP1",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头 TP1 止盈消息"
+    },
+    "i_sxMsgTP2": {
+      "value": "Short TP2",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头 TP2 止盈消息"
+    },
+    "i_sxMsgTP3": {
+      "value": "Short TP3",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头 TP3 止盈消息"
+    },
+    "i_sxMsg": {
+      "value": "Short Exit",
+      "type": "string",
+      "group": "Webhook Message",
+      "pineInput": "hardcoded",
+      "description": "空头手动平仓消息"
+    }
+  },
+
+  "displayOptions": {
+    "description": "图表显示和仪表盘选项",
+    "scolor": {
+      "value": true,
+      "type": "boolean",
+      "group": "图表显示",
+      "pineInput": "input.bool",
+      "description": "根据趋势方向显示K线着色"
+    },
+    "almaRibbon": {
+      "value": false,
+      "type": "boolean",
+      "group": "图表显示",
+      "pineInput": "input.bool",
+      "description": "启用 Alm 丝带指示器"
+    },
+    "i_alertOn": {
+      "value": true,
+      "type": "boolean",
+      "group": "Display",
+      "pineInput": "hardcoded",
+      "description": "显示买入/卖出标签"
+    },
+    "i_barColOn": {
+      "value": true,
+      "type": "boolean",
+      "group": "Display",
+      "pineInput": "hardcoded",
+      "description": "启用 K线自定义着色"
+    },
+    "drawTester": {
+      "value": false,
+      "type": "boolean",
+      "group": "Dashboards",
+      "pineInput": "input.bool",
+      "description": "在图表右上角显示策略表现仪表盘（总交易数、胜率、收益率、最大回撤等）"
+    },
+    "i_showweeklyPerformance": {
+      "value": false,
+      "type": "boolean",
+      "group": "Dashboards",
+      "pineInput": "input.bool",
+      "description": "在图表左上角显示周度表现仪表盘（按星期统计）"
+    },
+    "i_showMonthlyPerformance": {
+      "value": false,
+      "type": "boolean",
+      "group": "Dashboards",
+      "pineInput": "input.bool",
+      "description": "在图表右下角显示月度表现仪表盘（按月统计）"
+    }
+  },
+
+  "reservedParams": {
+    "description": "预留参数 — 当前策略版本中尚未实现，保留占位供后续扩展",
+    "zigzagConfig": {
+      "description": "ZigZag 指标配置（当前策略未使用 ZigZag，保留字段）",
+      "Depth": {
+        "value": 12,
+        "type": "integer",
+        "min": 1,
+        "max": 100,
+        "group": "ZigZag",
+        "pineInput": "not_implemented",
+        "description": "ZigZag 深度"
+      },
+      "Deviation": {
+        "value": 5,
+        "type": "integer",
+        "min": 1,
+        "max": 50,
+        "group": "ZigZag",
+        "pineInput": "not_implemented",
+        "description": "ZigZag 偏差百分比"
+      },
+      "Backstep": {
+        "value": 3,
+        "type": "integer",
+        "min": 1,
+        "max": 20,
+        "group": "ZigZag",
+        "pineInput": "not_implemented",
+        "description": "ZigZag 回步数"
+      }
+    },
+    "emaAtrConfig": {
+      "description": "EMA/ATR 高级配置（当前策略未使用这些独立参数，保留字段）",
+      "emaPeriod": {
+        "value": 9,
+        "type": "integer",
+        "min": 1,
+        "max": 200,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "EMA 周期"
+      },
+      "emaPeriod2": {
+        "value": 21,
+        "type": "integer",
+        "min": 1,
+        "max": 500,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "EMA 周期 2"
+      },
+      "emaPeriod3": {
+        "value": 50,
+        "type": "integer",
+        "min": 1,
+        "max": 500,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "EMA 周期 3"
+      },
+      "periodDema": {
+        "value": 14,
+        "type": "integer",
+        "min": 1,
+        "max": 200,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "DEMA 周期"
+      },
+      "periodAtr": {
+        "value": 14,
+        "type": "integer",
+        "min": 1,
+        "max": 200,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "ATR 计算周期（独立于风险管理的 ATR）"
+      },
+      "factorAtr": {
+        "value": 2.0,
+        "type": "float",
+        "min": 0.1,
+        "max": 10,
+        "step": 0.1,
+        "group": "EMA/ATR",
+        "pineInput": "not_implemented",
+        "description": "ATR 倍数"
+      }
+    }
+  }
+}
