@@ -69,8 +69,10 @@ app.get('/health', async (_req, res) => {
   res.json({
     status: 'ok',
     exchange: config.exchange,
+    exchangeType: config.exchangeType,
     network: config.network.toUpperCase(),
     orderType: config.defaultOrderType,
+    dryRun: config.dryRun,
     serverTime,
     accountStatus,
     allowedSymbols: Object.keys(config.symbols),
@@ -152,8 +154,10 @@ app.listen(config.port, config.host, () => {
   console.log('╔══════════════════════════════════════════════╗');
   console.log('║   LE VAN DO® 交易信号执行服务                ║');
   console.log('╠══════════════════════════════════════════════╣');
-  console.log(`║  交易所:     ${config.exchange.padEnd(28)}║`);
+  console.log(`║  交易所:     ${(config.exchangeType === 'mt5' ? 'MT5' : config.exchange).padEnd(28)}║`);
+  console.log(`║  後端:       ${config.exchangeType.padEnd(28)}║`);
   console.log(`║  网络:       ${(config.isTestnet ? '🟡 测试网' : '🔴 实盘').padEnd(28)}║`);
+  console.log(`║  模擬模式:   ${(config.dryRun ? '🟢 啟用' : '🔴 關閉').padEnd(28)}║`);
   console.log(`║  端口:       ${String(config.port).padEnd(28)}║`);
   console.log(`║  订单类型:   ${config.defaultOrderType.padEnd(28)}║`);
   console.log(`║  Webhook:    POST /webhook                    ║`);
