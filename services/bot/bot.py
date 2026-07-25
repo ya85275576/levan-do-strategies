@@ -131,7 +131,8 @@ class SignalHandler:
         if self.om.dry_run:
             equity = self.initial_capital
         else:
-            pass  # TODO: 实盘余额获取
+            # TODO: 实盘余额获取, 暂时使用初始资金
+            equity = self.initial_capital
 
         trade_value = equity * (self.trade_qty_pct / 100.0)
         qty = trade_value / current_price if current_price > 0 else 0.001

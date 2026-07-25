@@ -39,7 +39,7 @@ module.exports = {
                 TF_MULT: '18',
                 INITIAL_CAPITAL: '10000',
                 DEFAULT_LEVERAGE: '100',
-                TRADE_QTY_PCT: '100',
+                TRADE_QTY_PCT: '1',
             },
 
             // 实盘环境（使用 --env production）
@@ -57,7 +57,7 @@ module.exports = {
                 TF_MULT: '18',
                 INITIAL_CAPITAL: '10000',
                 DEFAULT_LEVERAGE: '100',
-                TRADE_QTY_PCT: '100',
+                TRADE_QTY_PCT: '1',
             },
 
             // 日志
