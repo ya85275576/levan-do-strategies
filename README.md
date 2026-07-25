@@ -23,6 +23,8 @@
 │       └── config.json                      ← 策略参数配置
 ├── strategies/                              ← Pine Script 策略源码
 │   ├── README.md                            ← 策略清單總表
+│   ├── _TEMPLATE.pine                       ← 策略開發模板（標準化信號格式/命名/註釋）
+│   ├── _TEMPLATE_README.md                  ← 模板使用指南
 │   ├── LE_VAN_DO_Swing_Signals_7.9-X.pine   ← 原始碼（Pine Script v5）
 │   └── LE_VAN_DO_Swing_Signals_7.9-X/
 │       ├── params.json                      ← 結構化參數定義

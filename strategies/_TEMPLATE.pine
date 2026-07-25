@@ -1,0 +1,614 @@
+//@version=5
+// =============================================================================
+// 策略模板 — Strategy Template
+// =============================================================================
+// 本文件是 Pine Script v5 策略的标准化模板，规定了统一的：
+//   1) 代码结构分区
+//   2) 参数命名规范（前缀规则）
+//   3) 信号输出格式（买入/卖出/止损/止盈）
+//   4) 注释风格
+//   5) 风险管理和图表显示
+//
+// 所有新策略应复制本模板，按以下步骤开发：
+//   1. 修改 strategy() 声明中的名称和参数
+//   2. 在「信号计算区」实现自定义入场/离场条件
+//   3. 在「风险管理区」调整 TP/SL 参数
+//   4. 在「可视化区」按需调整绘图
+//   5. 更新版本号和 changelog
+//
+// 命名规范：
+//   i_xxx     — input 参数（用户可调）
+//   G_xxx     — input 分组标签
+//   O_xxx     — 默认值常量
+//   f_xxx     — 自定义函数
+//   c_xxx     — 颜色变量
+//   p_xxx     — plot 对象
+//   leTrigger — 多头入场触发信号 (Long Entry Trigger)
+//   seTrigger — 空头入场触发信号 (Short Entry Trigger)
+//   lxTrigger — 多头离场触发信号 (Long Exit Trigger)
+//   sxTrigger — 空头离场触发信号 (Short Exit Trigger)
+//   longE     — 多头入场执行信号
+//   shortE    — 空头入场执行信号
+//   longX     — 多头离场执行信号
+//   shortX    — 空头离场执行信号
+//   longSL    — 多头止损信号
+//   shortSL   — 空头止损信号
+//   longTPn   — 多头第 n 层止盈信号
+//   shortTPn  — 空头第 n 层止盈信号
+//
+// 版本约定：
+//   MAJOR.MINOR-PATCH  (例如 1.0.0)
+//   MAJOR — 策略逻辑重大变更
+//   MINOR — 新增功能或参数
+//   PATCH — 代码优化或 bug 修复
+// =============================================================================
+
+// —————————————————————————————————————————————————————————————————————————————
+// [版本号]
+// —————————————————————————————————————————————————————————————————————————————
+VERSION = '1.0.0'  // 格式：YYYY.MM.DD 或语义化版本
+
+// —————————————————————————————————————————————————————————————————————————————
+// [策略声明] — strategy() 参数定义
+// —————————————————————————————————————————————————————————————————————————————
+strategy(
+  '策略名称 — 副标题',
+  shorttitle              = '策略简称' + ' ' + VERSION,
+  overlay                 = true,              // K线覆盖模式
+  explicit_plot_zorder    = true,              // 显式绘图层级
+  pyramiding              = 0,                 // 同方向最大开仓数（0=不允许加仓）
+  default_qty_type        = strategy.percent_of_equity,  // 仓位类型
+  default_qty_value       = 50,                // 默认仓位比例（%）
+  calc_on_every_tick      = false,             // 每个 tick 都计算
+  process_orders_on_close = true,              // K线收盘时处理订单
+  max_bars_back           = 500,               // 最大回溯 K 线数
+  initial_capital         = 5000,              // 初始资金
+  commission_type         = strategy.commission.percent,  // 手续费类型
+  commission_value        = 0.02,              // 手续费率（%）
+  max_lines_count         = 500                // 最大线对象数量
+)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [工具函数] — 通用辅助函数
+// —————————————————————————————————————————————————————————————————————————————
+
+// 截断浮点数到指定位数小数
+// @param  number  原始数值
+// @param  decimals 保留小数位数
+// @returns        截断后的数值
+truncate(number, decimals) =>
+    factor = math.pow(10, decimals)
+    int(number * factor) / factor
+
+// 安全地获取非同周期数据（防未来函数）
+// @param  _symbol 交易品种
+// @param  _res    时间周期
+// @param  _src    数据源
+// @returns        偏移 1 根 K 线的请求数据
+rp_security(_symbol, _res, _src) =>
+    request.security(_symbol, _res, _src[1])
+
+// 获取当前周期的高一级时间框架（字符串格式）
+// @returns  高一级时间框架字符串
+f_tfInMinutes() =>
+    _tfInMinutes =
+      timeframe.period == '1'  ? '3'   :
+      timeframe.period == '3'  ? '5'   :
+      timeframe.period == '5'  ? '15'  :
+      timeframe.period == '15' ? '30'  :
+      timeframe.period == '30' ? '60'  :
+      timeframe.period == '60' ? '240' : 'D'
+    _tfInMinutes
+
+// 将时间框架转换为分钟数
+// @returns  当前时间框架对应的分钟数
+f_resInMinutes() =>
+    _resInMinutes = timeframe.multiplier * (
+      timeframe.isseconds ? 1. / 60. :
+      timeframe.isminutes ? 1.       :
+      timeframe.isdaily   ? 1440.    :
+      timeframe.isweekly  ? 10080.   :
+      timeframe.ismonthly ? 43800.   : na)
+    _resInMinutes
+
+// 计算两个数值的交叉（向上/向下）
+// @param  _scr1  第一条数据线
+// @param  _scr2  第二条数据线
+// @param  _over  true=向上交叉，false=向下交叉
+// @returns       交叉发生的布尔值
+f_cross(_scr1, _scr2, _over) =>
+    _cross = _over ? _scr1 > _scr2 and _scr1[1] < _scr2[1] :
+                     _scr1 < _scr2 and _scr1[1] > _scr2[1]
+
+// —————————————————————————————————————————————————————————————————————————————
+// [颜色常量] — 策略中使用的颜色定义
+// —————————————————————————————————————————————————————————————————————————————
+// 用法：c_名称 = #RRGGBBAA（A=FF 为完全不透明）
+// —————————————————————————————————————————————————————————————————————————————
+c_GREEN      = #008000FF   // 绿色（多头）
+c_LIME       = #66BB6AFF   // 亮绿色
+c_RED        = #F7525FFF   // 红色（空头）
+c_BLUE       = #0000FFFF   // 蓝色（入场线）
+c_AQUA       = #00FFFFFF   // 青色
+c_DARKRED    = #8B0000FF   // 深红色（止损）
+c_GRAY       = #808080FF   // 灰色（平仓）
+c_PURPLE     = #78098BFF   // 紫色（多头K线着色）
+c_ORANGE     = #E19B45FF   // 橙色（空头K线着色）
+c_TP         = #EC407AFF   // 粉色（止盈标签）
+c_SL         = #800000FF   // 栗色（止损标签）
+
+// —————————————————————————————————————————————————————————————————————————————
+// [输入参数区] — 所有用户可调参数集中于此
+// —————————————————————————————————————————————————————————————————————————————
+// 命名：i_描述性名称
+// 分组：G_分组名 作为 group 参数
+// —————————————————————————————————————————————————————————————————————————————
+
+// —— 交易模式 ——
+G_MODE       = '■ 交易模式'
+i_tpSlMode   = input.string('Trailing', '止盈止损模式',
+     options = ['ATR', 'Trailing', 'Options'],
+     group   = G_MODE,
+     tooltip = 'ATR=基于ATR的动态止盈止损\nTrailing=追踪止损\nOptions=仅开仓（手动管理出场）')
+
+i_entryMode  = input.string('Open/Close', '信号来源',
+     options = ['Open/Close', 'Renko'],
+     group   = G_MODE,
+     tooltip = 'Open/Close=基于K线收盘价突破开盘价\nRenko=基于Renko砖形图EMA交叉')
+
+// —— 回测日期范围 ——
+G_RANGE      = '■ 回测范围'
+i_enableFilter = input.bool(true, '启用日期过滤', group = G_RANGE)
+i_fromDate   = input.time(timestamp('01 Jan 2023 00:00 +0300'), '开始日期', group = G_RANGE)
+i_toDate     = input.time(timestamp('31 Dec 2099 00:00 +0300'), '结束日期', group = G_RANGE)
+tradeDateIsAllowed = not i_enableFilter or (time >= i_fromDate and time <= i_toDate)
+
+// —— 风险参数 ——
+G_RISK       = '■ 风险管理'
+i_atrLength  = input.int(20, 'ATR周期', minval = 1, maxval = 200, group = G_RISK)
+i_profitFactor = input.float(2.5, '止盈倍数', minval = 0.1, maxval = 20, step = 0.1, group = G_RISK,
+     tooltip = '止盈距离 = 止盈倍数 × ATR')
+i_stopFactor = input.float(1.0, '止损倍数', minval = 0.1, maxval = 10, step = 0.1, group = G_RISK,
+     tooltip = '止损距离 = 止损倍数 × ATR')
+i_tp1Qty     = input.float(50, 'TP1平仓%', minval = 0, maxval = 100, step = 1, group = G_RISK,
+     tooltip = '第一级止盈平仓百分比')
+i_tp2Qty     = input.float(30, 'TP2平仓%', minval = 0, maxval = 100, step = 1, group = G_RISK,
+     tooltip = '第二级止盈平仓百分比')
+i_tp3Qty     = input.float(20, 'TP3平仓%', minval = 0, maxval = 100, step = 1, group = G_RISK,
+     tooltip = '第三级止盈平仓百分比')
+
+// —— 图表显示 ——
+G_DISPLAY    = '■ 图表显示'
+i_showBarColor  = input.bool(true, '趋势K线着色', group = G_DISPLAY)
+i_showSignals   = input.bool(true, '信号标签', group = G_DISPLAY)
+i_showDashboard = input.bool(false, '绩效仪表盘', group = G_DISPLAY)
+
+// —— Webhook 消息 ——
+G_WEBHOOK    = '■ Webhook 消息'
+// 默认消息模板（建议在策略中保持硬编码，如需动态修改再设为 input）
+i_leMsg      = 'Long Entry'
+i_lxMsg      = 'Long Exit'
+i_seMsg      = 'Short Entry'
+i_sxMsg      = 'Short Exit'
+i_slMsg      = 'Stop Loss'
+i_tp1Msg     = 'TP1'
+i_tp2Msg     = 'TP2'
+i_tp3Msg     = 'TP3'
+
+// —————————————————————————————————————————————————————————————————————————————
+// [信号计算区] — 策略核心交易信号
+// —————————————————————————————————————————————————————————————————————————————
+// ★ 开发者在此区域实现自定义入场/离场条件
+//    输出信号变量（布尔值）：
+//      leTrigger — 多头入场触发
+//      seTrigger — 空头入场触发
+//      lxTrigger — 多头离场触发
+//      sxTrigger — 空头离场触发
+//
+// 示例：使用简单移动平均线交叉作为信号
+// —————————————————————————————————————————————————————————————————————————————
+
+// --- 示例信号（请替换为实际策略逻辑）---
+i_fastLen    = input.int(9,  '快线周期', group = '★ 策略参数（示例）')
+i_slowLen    = input.int(21, '慢线周期', group = '★ 策略参数（示例）')
+
+fastMA       = ta.sma(close, i_fastLen)
+slowMA       = ta.sma(close, i_slowLen)
+
+leTrigger    = ta.crossover(fastMA, slowMA)   // 快线上穿慢线 → 多
+seTrigger    = ta.crossunder(fastMA, slowMA)  // 快线下穿慢线 → 空
+lxTrigger    = false   // 默认无独立离场信号（由反向入场平仓）
+sxTrigger    = false
+
+// --- 备用：Heikin Ashi / Renko 信号模板（取消注释使用）---
+// 如需使用 Heikin Ashi 或 Renko，参考以下结构：
+// tf        = f_tfInMinutes()
+// haTicker  = ticker.heikinashi(syminfo.tickerid)
+// haClose   = request.security(haTicker, tf, close, lookahead = barmerge.lookahead_on)
+// haOpen    = request.security(haTicker, tf, open,  lookahead = barmerge.lookahead_on)
+// leTrigger = ta.crossover(haClose, haOpen)
+// seTrigger = ta.crossunder(haClose, haOpen)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [仓位管理区] — 状态变量与条件追踪（多级 TP/SL 状态机）
+// —————————————————————————————————————————————————————————————————————————————
+// 使用 condition 变量追踪仓位的 TP/SL 层级状态：
+//   1.0  → 已入场（等待 TP1 或 SL）
+//   1.1  → TP1 已触发（等待 TP2 或 SL）
+//   1.2  → TP2 已触发（等待 TP3 或 SL）
+//   1.3  → TP3 已触发（等待最终离场）
+//   0.0  → 无持仓
+// 空头使用负值镜像
+// —————————————————————————————————————————————————————————————————————————————
+
+// TP/SL 价格计算
+tpatrValue    = ta.atr(i_atrLength)
+tp1Distance   = 1 * i_profitFactor * tpatrValue
+tp2Distance   = 2 * i_profitFactor * tpatrValue
+tp3Distance   = 3 * i_profitFactor * tpatrValue
+slDistance    = 1 * i_stopFactor * tpatrValue
+
+// --- 交易信号封裝 ---
+// 将触发信号转换为可执行的入场/离场信号
+buy           = leTrigger
+sell          = seTrigger
+
+// --- 仓位状态追踪 ---
+var float condition  = 0.0   // 仓位状态
+var float entryLine  = 0.0   // 入场价格
+var float slLine     = 0.0   // 止损价格
+var float tp1Line    = 0.0   // 第一止盈价格
+var float tp2Line    = 0.0   // 第二止盈价格
+var float tp3Line    = 0.0   // 第三止盈价格
+
+// 入场记录
+entryLine  := leTrigger and condition[1] <= 0.0 ? close :
+              seTrigger and condition[1] >= 0.0 ? close : nz(entryLine[1])
+
+// 计算各级 TP/SL 价格（多头）
+tp1Buy      = entryLine + tp1Distance
+tp2Buy      = entryLine + tp2Distance
+tp3Buy      = entryLine + tp3Distance
+slBuy       = entryLine - slDistance
+
+// 计算各级 TP/SL 价格（空头）
+tp1Sell     = entryLine - tp1Distance
+tp2Sell     = entryLine - tp2Distance
+tp3Sell     = entryLine - tp3Distance
+slSell      = entryLine + slDistance
+
+// 更新当前持仓的 SL 和 TP 线
+slLine     := condition[1] <= 0.0 and leTrigger ? slBuy :
+              condition[1] >= 0.0 and seTrigger ? slSell : nz(slLine[1])
+tp1Line    := condition[1] <= 0.0 and leTrigger ? tp1Buy :
+              condition[1] >= 0.0 and seTrigger ? tp1Sell : nz(tp1Line[1])
+tp2Line    := condition[1] <= 0.0 and leTrigger ? tp2Buy :
+              condition[1] >= 0.0 and seTrigger ? tp2Sell : nz(tp2Line[1])
+tp3Line    := condition[1] <= 0.0 and leTrigger ? tp3Buy :
+              condition[1] >= 0.0 and seTrigger ? tp3Sell : nz(tp3Line[1])
+
+// 检测价格是否触达 TP/SL
+tp1Hit      = ta.crossunder(high, tp1Line) or ta.crossover(low, tp1Line)
+tp2Hit      = ta.crossunder(high, tp2Line) or ta.crossover(low, tp2Line)
+tp3Hit      = ta.crossunder(high, tp3Line) or ta.crossover(low, tp3Line)
+slHit       = ta.crossunder(low,  slLine)  or ta.crossover(high, slLine)
+
+// --- 状态机更新 ---
+switch
+    // 多头入场
+    leTrigger and condition[1] <= 0.0 => condition :=  1.0
+    // 空头入场
+    seTrigger and condition[1] >= 0.0 => condition := -1.0
+    // 多头 TP 层级推进
+    tp1Hit    and condition[1] ==  1.0 => condition :=  1.1
+    tp2Hit    and condition[1] ==  1.1 => condition :=  1.2
+    tp3Hit    and condition[1] ==  1.2 => condition :=  1.3
+    // 空头 TP 层级推进
+    tp1Hit    and condition[1] == -1.0 => condition := -1.1
+    tp2Hit    and condition[1] == -1.1 => condition := -1.2
+    tp3Hit    and condition[1] == -1.2 => condition := -1.3
+    // 止损或手动离场 → 清仓
+    slHit     and math.abs(condition[1]) >= 1.0 => condition := 0.0
+    lxTrigger and condition[1] >= 1.0 => condition := 0.0
+    sxTrigger and condition[1] <= -1.0 => condition := 0.0
+
+// —————————————————————————————————————————————————————————————————————————————
+// [信号输出区] — 统一信号格式（所有信号集中输出）
+// —————————————————————————————————————————————————————————————————————————————
+// 输出信号（布尔值），供外部系统（Webhook、绘图、策略订单）使用：
+//
+//   信号类型        | 变量名      | 含义
+//   ————————————————|————————————|——————————————
+//   多头入场        | longE       | 开多头仓位
+//   空头入场        | shortE      | 开空头仓位
+//   多头平仓        | longX       | 平多头仓位
+//   空头平仓        | shortX      | 平空头仓位
+//   多头止损        | longSL      | 多头触及止损
+//   空头止损        | shortSL     | 空头触及止损
+//   多头 TP1 止盈   | longTP1     | 多头第一目标
+//   多头 TP2 止盈   | longTP2     | 多头第二目标
+//   多头 TP3 止盈   | longTP3     | 多头第三目标
+//   空头 TP1 止盈   | shortTP1    | 空头第一目标
+//   空头 TP2 止盈   | shortTP2    | 空头第二目标
+//   空头 TP3 止盈   | shortTP3    | 空头第三目标
+// —————————————————————————————————————————————————————————————————————————————
+
+// 入场信号
+longE    = leTrigger and condition[1] <= 0.0 and condition ==  1.0
+shortE   = seTrigger and condition[1] >= 0.0 and condition == -1.0
+
+// 离场信号
+longX    = lxTrigger and condition[1] >= 1.0 and condition == 0.0
+shortX   = sxTrigger and condition[1] <= -1.0 and condition == 0.0
+
+// 止损信号
+longSL   = slHit and condition[1] >= 1.0 and condition == 0.0
+shortSL  = slHit and condition[1] <= -1.0 and condition == 0.0
+
+// 止盈信号（多层）
+longTP1  = tp1Hit and condition[1] ==  1.0 and condition ==  1.1
+longTP2  = tp2Hit and condition[1] ==  1.1 and condition ==  1.2
+longTP3  = tp3Hit and condition[1] ==  1.2 and condition ==  1.3
+shortTP1 = tp1Hit and condition[1] == -1.0 and condition == -1.1
+shortTP2 = tp2Hit and condition[1] == -1.1 and condition == -1.2
+shortTP3 = tp3Hit and condition[1] == -1.2 and condition == -1.3
+
+// —————————————————————————————————————————————————————————————————————————————
+// [订单执行区] — 策略委托发送
+// —————————————————————————————————————————————————————————————————————————————
+
+// === Trailing 模式 ===
+// 模式说明：反向信号平仓 + 新方向开仓，不使用固定 TP/SL
+if buy and i_tpSlMode == 'Trailing' and tradeDateIsAllowed
+    strategy.close('Short', alert_message = i_sxMsg, comment = 'SX')
+    strategy.entry('Long',  strategy.long,  alert_message = i_leMsg, comment = 'LE')
+
+if sell and i_tpSlMode == 'Trailing' and tradeDateIsAllowed
+    strategy.close('Long',  alert_message = i_lxMsg, comment = 'LX')
+    strategy.entry('Short', strategy.short, alert_message = i_seMsg, comment = 'SE')
+
+// === ATR 模式 ===
+// 模式说明：使用多级 TP + 固定 SL，反向信号不平仓（由 TP/SL 管理离场）
+if strategy.position_size <= 0 and longE and i_tpSlMode == 'ATR' and tradeDateIsAllowed
+    strategy.entry('Long', strategy.long, alert_message = i_leMsg, comment = 'LE')
+
+if strategy.position_size >= 0 and shortE and i_tpSlMode == 'ATR' and tradeDateIsAllowed
+    strategy.entry('Short', strategy.short, alert_message = i_seMsg, comment = 'SE')
+
+if strategy.position_size > 0 and i_tpSlMode == 'ATR' and tradeDateIsAllowed
+    // 多头三层止盈 + 止损（每个层级都带 SL，确保风险可控）
+    strategy.exit('LXTP1', 'Long',  qty_percent = i_tp1Qty, limit = tp1Line, stop = slLine,
+         comment_profit = 'TP1', comment_loss = 'SL', alert_profit = i_tp1Msg, alert_loss = i_slMsg)
+    strategy.exit('LXTP2', 'Long',  qty_percent = i_tp2Qty, limit = tp2Line, stop = slLine,
+         comment_profit = 'TP2', comment_loss = 'SL', alert_profit = i_tp2Msg, alert_loss = i_slMsg)
+    strategy.exit('LXTP3', 'Long',  qty_percent = i_tp3Qty, limit = tp3Line, stop = slLine,
+         comment_profit = 'TP3', comment_loss = 'SL', alert_profit = i_tp3Msg, alert_loss = i_slMsg)
+
+if strategy.position_size < 0 and i_tpSlMode == 'ATR' and tradeDateIsAllowed
+    // 空头三层止盈 + 止损
+    strategy.exit('SXTP1', 'Short', qty_percent = i_tp1Qty, limit = tp1Line, stop = slLine,
+         comment_profit = 'TP1', comment_loss = 'SL', alert_profit = i_tp1Msg, alert_loss = i_slMsg)
+    strategy.exit('SXTP2', 'Short', qty_percent = i_tp2Qty, limit = tp2Line, stop = slLine,
+         comment_profit = 'TP2', comment_loss = 'SL', alert_profit = i_tp2Msg, alert_loss = i_slMsg)
+    strategy.exit('SXTP3', 'Short', qty_percent = i_tp3Qty, limit = tp3Line, stop = slLine,
+         comment_profit = 'TP3', comment_loss = 'SL', alert_profit = i_tp3Msg, alert_loss = i_slMsg)
+
+// === Options 模式 ===
+// 模式说明：仅开仓，离场由外部系统管理
+if i_tpSlMode == 'Options' and tradeDateIsAllowed
+    if buy
+        strategy.entry('Long', strategy.long, alert_message = i_leMsg, comment = 'LE')
+    if sell
+        strategy.close('Long', alert_message = i_lxMsg, comment = 'LX')
+
+// 手动离场（lxTrigger / sxTrigger 触发）
+if longX and tradeDateIsAllowed
+    strategy.close('Long', alert_message = i_lxMsg, comment = 'LX')
+
+if shortX and tradeDateIsAllowed
+    strategy.close('Short', alert_message = i_sxMsg, comment = 'SX')
+
+// —————————————————————————————————————————————————————————————————————————————
+// [可视化区] — 图表显示与标签
+// —————————————————————————————————————————————————————————————————————————————
+
+// --- K线着色 ---
+barColor  = close > open ? c_PURPLE : c_ORANGE
+barcolor(i_showBarColor ? barColor : na, title = 'K线趋势着色')
+
+// --- TP/SL 价格线绘制 ---
+c_line    = leTrigger or seTrigger ? na : condition == 0.0 ? na : color.green
+c_entry   = leTrigger or seTrigger ? na : condition == 0.0 ? na : color.blue
+c_sl      = leTrigger or seTrigger ? na : condition == 0.0 ? na : color.red
+
+p_entry   = plot(condition >=  1.0 or condition <= -1.0 ? entryLine : na,
+     title = '入场线', color = c_entry, linewidth = 1, style = plot.style_linebr)
+p_sl      = plot(condition ==  1.0 or condition == -1.0 or
+                 condition ==  1.1 or condition == -1.1 or
+                 condition ==  1.2 or condition == -1.2 ? slLine : na,
+     title = '止损线', color = c_sl, linewidth = 1, style = plot.style_linebr)
+p_tp1     = plot(condition ==  1.0 or condition == -1.0 ? tp1Line : na,
+     title = 'TP1线',  color = c_line, linewidth = 1, style = plot.style_linebr)
+p_tp2     = plot(condition ==  1.0 or condition == -1.0 or
+                 condition ==  1.1 or condition == -1.1 ? tp2Line : na,
+     title = 'TP2线',  color = c_line, linewidth = 1, style = plot.style_linebr)
+p_tp3     = plot(condition ==  1.0 or condition == -1.0 or
+                 condition ==  1.1 or condition == -1.1 or
+                 condition ==  1.2 or condition == -1.2 ? tp3Line : na,
+     title = 'TP3线',  color = c_line, linewidth = 1, style = plot.style_linebr)
+
+// 入场与止损之间的填充
+fill(p_entry, p_sl, color = leTrigger or seTrigger ? na : color.new(color.red, 90))
+
+// --- 信号标签 ---
+// 使用 plotshape 在图表上显示买卖点
+plotshape(i_showSignals and longE,
+     title = '多头入场', text = '买入', textcolor = color.white, color = c_GREEN,
+     style = shape.labelup, size = size.tiny, location = location.belowbar)
+
+plotshape(i_showSignals and shortE,
+     title = '空头入场', text = '卖出', textcolor = color.white, color = c_RED,
+     style = shape.labeldown, size = size.tiny, location = location.abovebar)
+
+plotshape(i_showSignals and (longX or shortX) ? close : na,
+     title = '平仓', text = '平仓', textcolor = color.white, color = c_GRAY,
+     style = shape.labelup, size = size.tiny, location = location.absolute)
+
+plotshape(i_showSignals and (longSL or shortSL) ? close : na,
+     title = '止损', text = '止损', textcolor = color.white, color = c_DARKRED,
+     style = shape.labelup, size = size.tiny, location = location.absolute)
+
+plotshape(i_showSignals and (longTP1 or shortTP1) ? close : na,
+     title = 'TP1', text = 'TP1', textcolor = color.white, color = c_TP,
+     style = shape.labelup, size = size.tiny, location = location.absolute)
+
+plotshape(i_showSignals and (longTP2 or shortTP2) ? close : na,
+     title = 'TP2', text = 'TP2', textcolor = color.white, color = c_TP,
+     style = shape.labelup, size = size.tiny, location = location.absolute)
+
+plotshape(i_showSignals and (longTP3 or shortTP3) ? close : na,
+     title = 'TP3', text = 'TP3', textcolor = color.white, color = c_TP,
+     style = shape.labelup, size = size.tiny, location = location.absolute)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [调试数据区] — 数据窗口调试输出
+// —————————————————————————————————————————————————————————————————————————————
+plot(na, title = '─── 调试数据 ───', editable = false, display = display.data_window)
+plot(condition,              title = '仓位状态',    editable = false, display = display.data_window)
+plot(strategy.position_size, title = '持仓数量',    editable = false, display = display.data_window)
+plot(fastMA,                 title = '快线(MA)',    editable = false, display = display.data_window)
+plot(slowMA,                 title = '慢线(MA)',    editable = false, display = display.data_window)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [警报区] — Webhook 警报定义
+// —————————————————————————————————————————————————————————————————————————————
+// 每个关键事件可触发独立警报，方便外部系统（OKX、Telegram 等）接收通知
+// —————————————————————————————————————————————————————————————————————————————
+if longE or shortE or longX or shortX
+    alert(message = '交易信号触发', freq = alert.freq_once_per_bar_close)
+
+if longE
+    alert(message = i_leMsg, freq = alert.freq_once_per_bar_close)
+if shortE
+    alert(message = i_seMsg, freq = alert.freq_once_per_bar_close)
+if longX
+    alert(message = i_lxMsg, freq = alert.freq_once_per_bar_close)
+if shortX
+    alert(message = i_sxMsg, freq = alert.freq_once_per_bar_close)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [绩效仪表盘] — 策略回测表现展示
+// —————————————————————————————————————————————————————————————————————————————
+// 在图表上叠加一个表格，显示关键绩效指标
+// —————————————————————————————————————————————————————————————————————————————
+if i_showDashboard and tradeDateIsAllowed and barstate.islastconfirmedhistory
+    // 计算指标
+    totalTrades  = strategy.closedtrades
+    winRate      = totalTrades > 0 ? strategy.wintrades / totalTrades * 100 : 0.0
+    netProfit    = strategy.netprofit
+    totalReturn  = strategy.initial_capital > 0 ? netProfit / strategy.initial_capital * 100 : 0.0
+    profitFactor = strategy.grossloss != 0 ? strategy.grossprofit / strategy.grossloss : na
+
+    // 创建表格
+    var perfTable = table.new(position.top_right, 2, 5, border_width = 1,
+         frame_color = color.black, bgcolor = color.new(color.navy, 0))
+
+    // 辅助函数：填充单元格
+    fillCell(_table, _col, _row, _title, _value, _bg) =>
+        table.cell(_table, _col, _row, _title + '\n' + _value,
+             bgcolor = _bg, text_color = color.white, text_size = size.small)
+
+    // 表头
+    table.cell(perfTable, 0, 0, '指标',     bgcolor = color.rgb(3, 62, 106), text_color = color.white, text_size = size.small)
+    table.cell(perfTable, 1, 0, '数值',     bgcolor = color.rgb(3, 62, 106), text_color = color.white, text_size = size.small)
+
+    // 数据行
+    fillCell(perfTable, 0, 1, '总交易数',   str.tostring(totalTrades),           color.rgb(2, 81, 155))
+    fillCell(perfTable, 1, 1, '胜率',       str.tostring(truncate(winRate, 1)) + '%',
+         winRate >= 50 ? color.green : color.red)
+    fillCell(perfTable, 0, 2, '总收益',     '$' + str.tostring(truncate(netProfit, 2)),
+         netProfit >= 0 ? color.green : color.red)
+    fillCell(perfTable, 1, 2, '收益率',     (totalReturn >= 0 ? '+' : '') + str.tostring(truncate(totalReturn, 2)) + '%',
+         totalReturn >= 0 ? color.green : color.red)
+    fillCell(perfTable, 0, 3, '利润因子',   str.tostring(truncate(profitFactor, 2)),
+         profitFactor >= 1.5 ? color.green : profitFactor >= 1.0 ? color.orange : color.red)
+    fillCell(perfTable, 1, 3, '最大回撤',   str.tostring(truncate(strategy.max_drawdown / strategy.equity * 100, 2)) + '%',
+         color.red)
+    fillCell(perfTable, 0, 4, '平均盈利',   '$' + str.tostring(truncate(strategy.grossprofit / math.max(strategy.wintrades, 1), 2)),
+         color.green)
+    fillCell(perfTable, 1, 4, '平均亏损',   '$' + str.tostring(truncate(strategy.grossloss / math.max(strategy.losstrades, 1), 2)),
+         color.red)
+
+// —————————————————————————————————————————————————————————————————————————————
+// [扩展线绘制] — 用于 ATR 模式的延长线（可选）
+// —————————————————————————————————————————————————————————————————————————————
+// 以下代码使用 line 和 label 对象绘制从入场点延伸到图表右侧的连续线，
+// 仅在 i_tpSlMode == 'ATR' 时启用。
+// 如不需要可删除。
+// —————————————————————————————————————————————————————————————————————————————
+
+// 队列管理辅助函数（用于替换未实现的 f_qDq）
+f_queueOrDelete(_arr, _newObj) =>
+    // 将新对象加入数组，如果数组已有元素则先删除旧对象
+    if array.size(_arr) > 0
+        _old = array.get(_arr, 0)
+        if not na(_old)
+            // 根据对象类型调用对应的删除函数
+            if str.contains(str.tostring(_old), 'line')
+                line.delete(_old)
+            else if str.contains(str.tostring(_old), 'label')
+                label.delete(_old)
+        array.clear(_arr)
+    array.push(_arr, _newObj)
+    _newObj
+
+if i_tpSlMode == 'ATR'
+    var line[]  extEntry = array.new_line(0)
+    var line[]  extSl    = array.new_line(0)
+    var line[]  extTp1   = array.new_line(0)
+    var line[]  extTp2   = array.new_line(0)
+    var line[]  extTp3   = array.new_line(0)
+    var label[] extEntryL = array.new_label(0)
+    var label[] extSlL    = array.new_label(0)
+    var label[] extTp1L   = array.new_label(0)
+    var label[] extTp2L   = array.new_label(0)
+    var label[] extTp3L   = array.new_label(0)
+
+    // 检测新入场
+    newEntry    = longE or shortE
+    entryIdx    = newEntry ? bar_index : nz(entryIdx[1])
+    rightExt    = 10  // 向右延伸的 K 线数
+
+    // 绘制延伸线
+    if newEntry
+        f_queueOrDelete(extEntry,  line.new(entryIdx, entryLine, last_bar_index + rightExt, entryLine,
+             style = line.style_solid, color = color.blue))
+        f_queueOrDelete(extSl,     line.new(entryIdx, slLine,    last_bar_index + rightExt, slLine,
+             style = line.style_solid, color = c_sl))
+        f_queueOrDelete(extTp1,    line.new(entryIdx, tp1Line,   last_bar_index + rightExt, tp1Line,
+             style = line.style_solid, color = c_line))
+        f_queueOrDelete(extTp2,    line.new(entryIdx, tp2Line,   last_bar_index + rightExt, tp2Line,
+             style = line.style_solid, color = c_line))
+        f_queueOrDelete(extTp3,    line.new(entryIdx, tp3Line,   last_bar_index + rightExt, tp3Line,
+             style = line.style_solid, color = c_line))
+
+        // 添加价格标签
+        f_queueOrDelete(extEntryL, label.new(last_bar_index + rightExt, entryLine,
+             'Entry: ' + str.tostring(entryLine, '##.###'),
+             style = label.style_label_left, textcolor = color.white, color = color.blue))
+        f_queueOrDelete(extSlL,    label.new(last_bar_index + rightExt, slLine,
+             'SL: ' + str.tostring(slLine, '##.###'),
+             style = label.style_label_left, textcolor = color.white, color = c_sl))
+        f_queueOrDelete(extTp1L,   label.new(last_bar_index + rightExt, tp1Line,
+             'TP1: ' + str.tostring(tp1Line, '##.###'),
+             style = label.style_label_left, textcolor = color.white, color = c_line))
+        f_queueOrDelete(extTp2L,   label.new(last_bar_index + rightExt, tp2Line,
+             'TP2: ' + str.tostring(tp2Line, '##.###'),
+             style = label.style_label_left, textcolor = color.white, color = c_line))
+        f_queueOrDelete(extTp3L,   label.new(last_bar_index + rightExt, tp3Line,
+             'TP3: ' + str.tostring(tp3Line, '##.###'),
+             style = label.style_label_left, textcolor = color.white, color = c_line))
+
+// =============================================================================
+// 模板结束 — 下方可添加策略特有的额外逻辑
+// =============================================================================
