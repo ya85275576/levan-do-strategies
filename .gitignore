@@ -17,6 +17,9 @@ Thumbs.db
 logs/
 *.log
 
+# Check state cache
+.check-state.json
+
 # Python
 __pycache__/
 *.pyc
