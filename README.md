@@ -2,11 +2,24 @@
 
 此仓库托管 LE VAN DO® 交易策略的 Pine Script 源代码，用于 TradingView 平台的回测与实盘交易。
 
-## 策略列表
+## 策略清單總表
 
-| 策略 | 版本 | 文件 |
-|------|------|------|
-| LE VAN DO® - Swing Signals & Overlays Private™ | 7.9-X | `strategies/LE_VAN_DO_Swing_Signals_7.9-X.pine` |
+詳細清單請參見 [`strategies/README.md`](strategies/README.md)。
+
+| # | 策略名稱 | 版本 | 檔案 | 結構化參數 | 狀態 |
+|---|----------|------|------|-----------|------|
+| 1 | LE VAN DO® - Swing Signals & Overlays Private™ | 7.9-X (2024.3.20) | `strategies/LE_VAN_DO_Swing_Signals_7.9-X.pine` | [`params.json`](strategies/LE_VAN_DO_Swing_Signals_7.9-X/params.json) / [`version.json`](strategies/LE_VAN_DO_Swing_Signals_7.9-X/version.json) | 回測中 |
+
+### 目錄結構
+
+```
+strategies/
+├── README.md                                ← 策略清單總表
+├── LE_VAN_DO_Swing_Signals_7.9-X.pine       ← 原始碼（Pine Script v5）
+└── LE_VAN_DO_Swing_Signals_7.9-X/
+    ├── params.json                          ← 結構化參數定義
+    └── version.json                         ← 版本變更記錄
+```
 
 ## 策略概述
 

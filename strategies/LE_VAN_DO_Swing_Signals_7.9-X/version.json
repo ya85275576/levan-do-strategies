@@ -1,0 +1,20 @@
+{
+  "strategy_name": "LE VAN DO® - Swing Signals & Overlays Private™",
+  "short_title": "LE VAN DO® - Swing Signals & Overlays Private™",
+  "version": "7.9-X (2024.3.20)",
+  "pine_version": "v5",
+  "author": "TraderHalai",
+  "last_updated": "2024-03-20",
+  "repository_path": "strategies/LE_VAN_DO_Swing_Signals_7.9-X.pine",
+  "changelog": [
+    {
+      "version": "7.9-X",
+      "date": "2024-03-20",
+      "description": "Initial captured version. Features: Open/Close & Renko dual entry modes, ATR/Trailing/Options three TP/SL modes, 7-mode sideways filter, 3-layer TP + trailing stop, ZigZag market structure, Order Blocks, FVG, EMA Cloud, DEMA ATR, Monthly/Weekly performance dashboards."
+    }
+  ],
+  "known_issues": [
+    "f_qDq function referenced in extended line drawing but not defined in source — may cause compilation error",
+    "i_lxLvlTP1/i_lxLvlTP2 references without definition — likely missing input declarations in the original full source"
+  ]
+}

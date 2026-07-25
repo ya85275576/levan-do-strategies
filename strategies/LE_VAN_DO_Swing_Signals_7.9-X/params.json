@@ -1,0 +1,436 @@
+{
+  "strategy": "LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X",
+  "parameter_groups": {
+    "entry_config": {
+      "description": "進場模式設定",
+      "params": [
+        {
+          "name": "TPSType",
+          "type": "string (select)",
+          "options": ["ATR", "Trailing", "Options"],
+          "default": "Trailing",
+          "source": "input()",
+          "description": "止盈止損模式"
+        },
+        {
+          "name": "setupType",
+          "type": "string (select)",
+          "options": ["Open/Close", "Renko"],
+          "default": "Open/Close",
+          "source": "input()",
+          "description": "交易進場模式：Heikin Ashi K線收盤突破開盤 或 Renko EMA交叉"
+        }
+      ]
+    },
+    "display": {
+      "description": "圖表顯示設定",
+      "params": [
+        {
+          "name": "scolor",
+          "type": "bool",
+          "default": true,
+          "source": "input()",
+          "description": "顯示趨勢彩色K線"
+        },
+        {
+          "name": "almaRibbon",
+          "type": "bool",
+          "default": false,
+          "source": "input()",
+          "description": "啟用 Alma Ribbon 填充"
+        }
+      ]
+    },
+    "backtest_range": {
+      "description": "回測日期範圍",
+      "params": [
+        {
+          "name": "enableFilter",
+          "type": "bool",
+          "default": true,
+          "source": "input()",
+          "description": "啟用回測日期過濾"
+        },
+        {
+          "name": "fromDate",
+          "type": "timestamp",
+          "default": "01 Jan 2023 00:00 +0300",
+          "source": "input.time()",
+          "description": "回測開始日期"
+        },
+        {
+          "name": "toDate",
+          "type": "timestamp",
+          "default": "31 Dec 2099 00:00 +0300",
+          "source": "input.time()",
+          "description": "回測結束日期"
+        }
+      ]
+    },
+    "sideways_filter": {
+      "description": "橫盤過濾器設定（7種模式）",
+      "params": [
+        {
+          "name": "typefilter",
+          "type": "string (select)",
+          "options": [
+            "Filter with Atr",
+            "Filter with RSI",
+            "Atr or RSI",
+            "Atr and RSI",
+            "No Filtering",
+            "Entry Only in sideways market(By ATR or RSI)",
+            "Entry Only in sideways market(By ATR and RSI)"
+          ],
+          "default": "No Filtering",
+          "source": "input()",
+          "description": "橫盤過濾模式"
+        }
+      ]
+    },
+    "rsi_filter": {
+      "description": "RSI 過濾參數",
+      "params": [
+        {
+          "name": "RSI_length",
+          "type": "int",
+          "default": 7,
+          "source": "input.int(7)",
+          "description": "RSI 計算週期"
+        },
+        {
+          "name": "toplimitrsi",
+          "type": "int",
+          "default": 45,
+          "source": "input.int(45)",
+          "description": "RSI 上限（過濾超買）"
+        },
+        {
+          "name": "botlimitrsi",
+          "type": "int",
+          "default": 10,
+          "source": "input.int(10)",
+          "description": "RSI 下限（過濾超賣）"
+        }
+      ]
+    },
+    "atr_filter": {
+      "description": "ATR 過濾參數",
+      "params": [
+        {
+          "name": "atrfiltLen",
+          "type": "int",
+          "default": 5,
+          "source": "hardcoded",
+          "description": "ATR 過濾計算週期"
+        },
+        {
+          "name": "atrMaLen",
+          "type": "int",
+          "default": 5,
+          "source": "hardcoded",
+          "description": "ATR 移動平均週期"
+        }
+      ]
+    },
+    "renko_settings": {
+      "description": "Renko 磚形圖設定",
+      "params": [
+        {
+          "name": "atrLen",
+          "type": "int",
+          "default": 3,
+          "source": "hardcoded",
+          "description": "Renko ATR 磚大小"
+        },
+        {
+          "name": "tradLen1",
+          "type": "int",
+          "default": 1000,
+          "source": "hardcoded",
+          "description": "傳統 Renko 磚大小基數"
+        },
+        {
+          "name": "EMA1_length",
+          "type": "int",
+          "default": 2,
+          "source": "input.int(2)",
+          "description": "Renko EMA 快線週期"
+        },
+        {
+          "name": "EMA2_length",
+          "type": "int",
+          "default": 10,
+          "source": "input.int(10)",
+          "description": "Renko EMA 慢線週期"
+        }
+      ]
+    },
+    "risk_management": {
+      "description": "風險管理參數",
+      "params": [
+        {
+          "name": "atrLength",
+          "type": "int",
+          "default": 20,
+          "source": "hardcoded",
+          "description": "ATR 計算週期（用於 TP/SL）"
+        },
+        {
+          "name": "profitFactor",
+          "type": "float",
+          "default": 2.5,
+          "source": "hardcoded",
+          "description": "獲利倍數（ATR 倍數計算 TP）"
+        },
+        {
+          "name": "stopFactor",
+          "type": "float",
+          "default": 1,
+          "source": "hardcoded",
+          "description": "止損倍數"
+        },
+        {
+          "name": "i_lxQtyTP1",
+          "type": "float",
+          "default": 50,
+          "source": "input.float(50)",
+          "description": "TP1 平倉百分比"
+        },
+        {
+          "name": "i_lxQtyTP2",
+          "type": "float",
+          "default": 30,
+          "source": "input.float(30)",
+          "description": "TP2 平倉百分比"
+        },
+        {
+          "name": "i_lxQtyTP3",
+          "type": "float",
+          "default": 20,
+          "source": "input.float(20)",
+          "description": "TP3 平倉百分比"
+        },
+        {
+          "name": "initial_capital",
+          "type": "float",
+          "default": 5000,
+          "source": "strategy() initial_capital=5000",
+          "description": "初始資金"
+        },
+        {
+          "name": "default_qty_value",
+          "type": "float",
+          "default": 50,
+          "source": "strategy() default_qty_value=50",
+          "description": "默認交易量（權益百分比）"
+        },
+        {
+          "name": "commission_value",
+          "type": "float",
+          "default": 0.02,
+          "source": "strategy() commission_value=0.02",
+          "description": "手續費百分比"
+        }
+      ]
+    },
+    "internal_tf": {
+      "description": "內部時間框架參數",
+      "params": [
+        {
+          "name": "tfmult",
+          "type": "int",
+          "default": 18,
+          "source": "hardcoded",
+          "description": "時間框架倍數（用於 Renko / HA 內部計算）"
+        }
+      ]
+    },
+    "webhook": {
+      "description": "Webhook 警報訊息",
+      "params": [
+        {
+          "name": "i_leMsg",
+          "type": "string",
+          "default": "Long Entry",
+          "source": "hardcoded",
+          "description": "多單進場警報訊息"
+        },
+        {
+          "name": "i_lxMsgSL",
+          "type": "string",
+          "default": "Long SL",
+          "source": "hardcoded",
+          "description": "多單止損警報訊息"
+        },
+        {
+          "name": "i_lxMsgTP1",
+          "type": "string",
+          "default": "Long TP1",
+          "source": "hardcoded",
+          "description": "多單 TP1 警報訊息"
+        },
+        {
+          "name": "i_lxMsgTP2",
+          "type": "string",
+          "default": "Long TP2",
+          "source": "hardcoded",
+          "description": "多單 TP2 警報訊息"
+        },
+        {
+          "name": "i_lxMsgTP3",
+          "type": "string",
+          "default": "Long TP3",
+          "source": "hardcoded",
+          "description": "多單 TP3 警報訊息"
+        },
+        {
+          "name": "i_lxMsg",
+          "type": "string",
+          "default": "Long Exit",
+          "source": "hardcoded",
+          "description": "多單平倉警報訊息"
+        },
+        {
+          "name": "i_seMsg",
+          "type": "string",
+          "default": "Short Entry",
+          "source": "hardcoded",
+          "description": "空單進場警報訊息"
+        },
+        {
+          "name": "i_sxMsgSL",
+          "type": "string",
+          "default": "Short SL",
+          "source": "hardcoded",
+          "description": "空單止損警報訊息"
+        },
+        {
+          "name": "i_sxMsgTP1",
+          "type": "string",
+          "default": "Short TP1",
+          "source": "hardcoded",
+          "description": "空單 TP1 警報訊息"
+        },
+        {
+          "name": "i_sxMsgTP2",
+          "type": "string",
+          "default": "Short TP2",
+          "source": "hardcoded",
+          "description": "空單 TP2 警報訊息"
+        },
+        {
+          "name": "i_sxMsgTP3",
+          "type": "string",
+          "default": "Short TP3",
+          "source": "hardcoded",
+          "description": "空單 TP3 警報訊息"
+        },
+        {
+          "name": "i_sxMsg",
+          "type": "string",
+          "default": "Short Exit",
+          "source": "hardcoded",
+          "description": "空單平倉警報訊息"
+        }
+      ]
+    },
+    "dashboards": {
+      "description": "儀表板顯示開關",
+      "params": [
+        {
+          "name": "drawTester",
+          "type": "bool",
+          "default": false,
+          "source": "input.bool(false)",
+          "group": "Dashboards",
+          "description": "策略績效儀表板"
+        },
+        {
+          "name": "i_showweeklyPerformance",
+          "type": "bool",
+          "default": false,
+          "source": "input.bool(false)",
+          "group": "Dashboards",
+          "description": "週度績效儀表板"
+        },
+        {
+          "name": "i_showMonthlyPerformance",
+          "type": "bool",
+          "default": false,
+          "source": "input.bool(false)",
+          "group": "Dashboards",
+          "description": "月度績效儀表板"
+        }
+      ]
+    },
+    "spec_documented_only": {
+      "description": "規格文件提及但當前原始碼中未找到的參數（可能屬於 Overlays 模組或舊版）",
+      "params": [
+        {
+          "name": "Depth",
+          "type": "int",
+          "default": 12,
+          "source": "spec only",
+          "description": "ZigZag 深度"
+        },
+        {
+          "name": "Deviation",
+          "type": "int",
+          "default": 5,
+          "source": "spec only",
+          "description": "ZigZag 偏差百分比"
+        },
+        {
+          "name": "Backstep",
+          "type": "int",
+          "default": 2,
+          "source": "spec only",
+          "description": "ZigZag 回退步數"
+        },
+        {
+          "name": "emaPeriod",
+          "type": "int",
+          "default": 48,
+          "source": "spec only",
+          "description": "EMA 雲主要週期"
+        },
+        {
+          "name": "emaPeriod2",
+          "type": "int",
+          "default": 2,
+          "source": "spec only",
+          "description": "EMA 雲第二週期"
+        },
+        {
+          "name": "emaPeriod3",
+          "type": "int",
+          "default": 21,
+          "source": "spec only",
+          "description": "EMA 雲第三週期"
+        },
+        {
+          "name": "periodDema",
+          "type": "int",
+          "default": 7,
+          "source": "spec only",
+          "description": "DEMA ATR 週期"
+        },
+        {
+          "name": "periodAtr",
+          "type": "int",
+          "default": 14,
+          "source": "spec only",
+          "description": "DEMA ATR 計算週期"
+        },
+        {
+          "name": "factorAtr",
+          "type": "float",
+          "default": 1.7,
+          "source": "spec only",
+          "description": "DEMA ATR 乘數因子"
+        }
+      ]
+    }
+  }
+}
