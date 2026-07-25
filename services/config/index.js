@@ -33,7 +33,10 @@ export function getConfig() {
   const isTestnet = network === 'testnet';
 
   const config = {
-    // 交易所
+    // 交易所類型（okx | mt5）
+    exchangeType: (process.env.EXCHANGE_TYPE || 'okx').toLowerCase(),
+
+    // 交易所名稱（顯示用）
     exchange: defaultConfig.exchange,
 
     // 网络环境
@@ -45,6 +48,12 @@ export function getConfig() {
     apiKey: process.env.OKX_API_KEY || '',
     apiSecret: process.env.OKX_API_SECRET || '',
     apiPassphrase: process.env.OKX_API_PASSPHRASE || '',
+
+    // MT5 憑證
+    mt5Account: process.env.MT5_ACCOUNT || '',
+    mt5Password: process.env.MT5_PASSWORD || '',
+    mt5Server: process.env.MT5_SERVER || 'ICMarkets-Demo',
+    mt5Path: process.env.MT5_PATH || '',
 
     // 模拟模式（不实际发送 API 请求）
     dryRun: (process.env.DRY_RUN || 'false').toLowerCase() === 'true',

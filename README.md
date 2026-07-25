@@ -61,13 +61,17 @@ Webhook 接收端点 (POST /webhook)
         ▼  信号解析
 信号解析器 (longE/shortE/longX/shortX)
         │
-        ▼  OKX V5 REST API
-交易所执行 (测试网/实盘)
+        ▼  EXCHANGE_TYPE 选择后端
+交易所工厂 (exchange/index.js)
         │
-        ▼  订单结果
-开仓 / 平仓 / TP / SL
+        ├── EXCHANGE_TYPE=okx（默认） →  OKX V5 REST API
+        │                              开仓 / 平仓 / TP / SL
+        │
+        └── EXCHANGE_TYPE=mt5        →  Node.js IPC → Python MetaTrader5
+                                          MT5 终端下单（需 Windows）
 ```
 
+兩種執行後端可隨時切換，既有 OKX 服務不受影響。
 详细配置说明请参阅 [`services/README.md`](services/README.md)。
 
 ## 使用方式

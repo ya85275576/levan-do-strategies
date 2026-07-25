@@ -1,7 +1,7 @@
 {
   "name": "le-van-do-trading-bot",
   "version": "1.0.0",
-  "description": "LE VAN DO® 交易策略自动化执行服务 - TradingView Webhook → OKX 挂单",
+  "description": "LE VAN DO® 交易策略自动化执行服务 - TradingView Webhook → OKX/MT5 挂单",
   "main": "webhook/server.js",
   "type": "module",
   "scripts": {
@@ -9,6 +9,10 @@
     "start:testnet": "EXCHANGE_NETWORK=testnet node webhook/server.js",
     "start:live": "EXCHANGE_NETWORK=production node webhook/server.js",
     "simulate": "node scripts/simulate.js",
+    "simulate:mt5": "EXCHANGE_TYPE=mt5 DRY_RUN=true node scripts/simulate-mt5.js",
+    "start:mt5": "EXCHANGE_TYPE=mt5 node webhook/server.js",
+    "start:mt5:testnet": "EXCHANGE_TYPE=mt5 EXCHANGE_NETWORK=testnet node webhook/server.js",
+    "start:mt5:live": "EXCHANGE_TYPE=mt5 EXCHANGE_NETWORK=production node webhook/server.js",
     "dev": "node --watch webhook/server.js"
   },
   "dependencies": {

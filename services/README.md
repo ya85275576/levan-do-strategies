@@ -361,5 +361,127 @@ OKX 使用带连字符的交易对格式（合约内部自动转换）：
 
 ---
 
+## 🤖 MT5 執行後端（新增）
+
+> MT5 (MetaTrader 5) 作為第二執行後端，與既有 OKX 服務並存。
+> 透過 `EXCHANGE_TYPE=mt5` 環境變數切換。
+
+### 架構
+
+```
+TradingView 策略警報
+        │
+        ▼  HTTP POST (alert_message)
+Webhook 接收端點 (POST /webhook)
+        │
+        ▼  信號解析
+信號解析器 (longE/shortE/longX/shortX) ← parser.js (不變)
+        │
+        ▼  EXCHANGE_TYPE=mt5
+exchange/index.js 工廠
+        │
+        ├── okx.js (既有 OKX，不受影響)
+        └── mt5.js (Node.js IPC 封裝)
+                │
+                ▼  stdin/stdout JSON
+        services/mt5/server.py (Python IPC Server)
+                │
+                ▼  MetaTrader5 API
+        MT5 終端 (僅 Windows)
+```
+
+### 檔案結構
+
+```
+services/
+├── mt5/
+│   ├── bridge.py          ← Python MetaTrader5 封裝（核心模組）
+│   ├── server.py          ← Python IPC Server（stdin/stdout JSON 協議）
+│   └── test_simulate.py   ← Python 端模擬測試
+├── exchange/
+│   ├── mt5.js             ← Node.js IPC 封裝（與 okx.js 同層級）
+│   ├── okx.js             ← 既有 OKX（不變）
+│   └── index.js           ← 工廠（支援 okx / mt5 切換）
+└── scripts/
+    └── simulate-mt5.js    ← MT5 模擬驗證腳本
+```
+
+### 前置條件
+
+| 環境 | 需求 |
+|------|------|
+| **Windows**（完整功能） | 安裝 MT5 終端、登入帳戶、啟用自動交易；`pip install MetaTrader5` |
+| **Linux/macOS**（僅模擬） | 設定 `DRY_RUN=true`，無需 MT5 終端 |
+
+### MT5 帳戶憑證
+
+在 Secrets 頁面（或 `.env`）配置：
+
+| 變數 | 說明 | 範例 |
+|------|------|------|
+| `MT5_ACCOUNT` | MT5 帳戶號碼 | `12345678` |
+| `MT5_PASSWORD` | MT5 帳戶密碼 | `MySecureP@ss` |
+| `MT5_SERVER` | 交易伺服器名稱 | `ICMarkets-Demo` |
+| `MT5_PATH` | MT5 終端 exe 路徑（選填） | `C:\Program Files\...\terminal64.exe` |
+
+> ⚠️ MT5 帳戶須先在 MT5 終端登入，並在「工具 → 選項 → 自動交易」中啟用自動交易。
+
+### 快速開始
+
+#### 1. 模擬模式（無需 MT5）
+
+```bash
+cd services
+EXCHANGE_TYPE=mt5 DRY_RUN=true node scripts/simulate-mt5.js
+```
+
+#### 2. 啟動 Webhook 服務（MT5 後端）
+
+```bash
+# 模擬模式
+EXCHANGE_TYPE=mt5 DRY_RUN=true npm run start:mt5
+
+# 測試網（需 Windows MT5 終端已連線）
+npm run start:mt5:testnet
+
+# 實盤
+npm run start:mt5:live
+```
+
+#### 3. Python 端直接測試
+
+```bash
+DRY_RUN=true python3 -m services.mt5.test_simulate
+```
+
+### 切換執行後端
+
+| 環境變數 | 執行後端 |
+|---------|---------|
+| `EXCHANGE_TYPE=okx`（預設） | OKX V5 API |
+| `EXCHANGE_TYPE=mt5` | MT5 Python MetaTrader5 |
+
+既有 OKX 服務完全不受影響，兩者可隨時切換。
+
+### 支援的 npm 腳本
+
+```bash
+npm run simulate          # OKX 模擬測試
+npm run simulate:mt5      # MT5 模擬測試
+npm start                 # OKX 服務（預設）
+npm run start:mt5         # MT5 服務
+npm run start:mt5:testnet # MT5 測試網
+npm run start:mt5:live    # MT5 實盤
+```
+
+### 限制
+
+1. **平台限制**：`MetaTrader5` Python 套件僅支援 Windows。Linux/macOS 需使用 `DRY_RUN=true` 模擬模式。
+2. **交易品種**：MT5 使用 6 字元格式（如 `BTCUSD`），模組自動從 `BTCUSDT` 轉換。實際品種名稱需依券商設定調整。
+3. **槓桿設定**：MT5 槓桿由帳戶/券商設定，無法透過 API 動態修改。`setLeverage()` 僅記錄日誌。
+4. **限價單**：支援市價單與限價單，但限價單需確保價格在 MT5 價格範圍內。
+
+---
+
 > **LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X**
 > 对接策略版本: 7.9-X（更多版本见 `configs/` 和 `strategies/`）
