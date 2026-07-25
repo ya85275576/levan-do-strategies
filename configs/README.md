@@ -58,3 +58,12 @@ configs/
 2. 根据 `config.json` 中每个参数的 `value` 手动设置输入框参数
 3. 对于标记为 `hardcoded` 的参数，需在 Pine Script 源码中直接修改
 4. 对于标记为 `not_implemented` 的预留参数，当前版本尚不支持
+
+## 交易所连接配置
+
+策略的交易所连接、API Key 管理、测试网/实盘切换等配置由 [`services/`](../services/) 目录管理。
+
+- 当前预设交易所：**OKX**（见 `config.json` → `meta.exchange`）
+- 交易所连接配置文档：[`services/README.md`](../services/README.md)
+- API 凭据通过团队 Secrets 页面配置（`OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`）
+- 支持市价单/限价单、模拟盘/实盘切换

@@ -1,0 +1,68 @@
+{
+  "exchange": "OKX",
+
+  "network": {
+    "testnet": {
+      "baseUrl": "https://www.okx.com",
+      "description": "OKX 模拟盘交易 — 使用模拟账户 API Key（https://www.okx.com）"
+    },
+    "production": {
+      "baseUrl": "https://www.okx.com",
+      "description": "OKX 实盘 — 真实资金交易"
+    }
+  },
+
+  "symbols": {
+    "BTCUSDT": {
+      "okxInstId": "BTC-USDT",
+      "instType": "SWAP",
+      "minQty": 0.001,
+      "qtyStep": 0.001,
+      "pricePrecision": 1,
+      "description": "Bitcoin / USDT 永续合约"
+    },
+    "ETHUSDT": {
+      "okxInstId": "ETH-USDT",
+      "instType": "SWAP",
+      "minQty": 0.01,
+      "qtyStep": 0.01,
+      "pricePrecision": 1,
+      "description": "Ethereum / USDT 永续合约"
+    },
+    "SOLUSDT": {
+      "okxInstId": "SOL-USDT",
+      "instType": "SWAP",
+      "minQty": 0.1,
+      "qtyStep": 0.1,
+      "pricePrecision": 2,
+      "description": "Solana / USDT 永续合约"
+    }
+  },
+
+  "orderTypes": {
+    "market": {
+      "description": "市价单 - 以当前市场最优价格立即成交",
+      "okxValue": "market",
+      "supported": true
+    },
+    "limit": {
+      "description": "限价单 - 以指定或更优价格成交，可能部分成交或未成交",
+      "okxValue": "limit",
+      "supported": true
+    }
+  },
+
+  "riskLimits": {
+    "maxPositionSize": 10000,
+    "maxDailyLoss": 500,
+    "maxLeverage": 10,
+    "minOrderIntervalMs": 1000
+  },
+
+  "tradingViewAlertFormats": {
+    "longE":  { "action": "open",  "side": "Buy",  "description": "多头开仓信号" },
+    "shortE": { "action": "open",  "side": "Sell", "description": "空头开仓信号" },
+    "longX":  { "action": "close", "side": "Buy",  "description": "多头平仓信号" },
+    "shortX": { "action": "close", "side": "Sell", "description": "空头平仓信号" }
+  }
+}
