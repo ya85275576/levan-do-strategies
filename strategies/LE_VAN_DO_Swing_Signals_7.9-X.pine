@@ -1,0 +1,1045 @@
+//@version=5
+
+//
+
+VERSION                   = '7.9-X'// 2024.3.20
+
+strategy(
+
+  'LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X',
+
+  shorttitle              = 'LE VAN DO® - Swing Signals & Overlays Private™ 7.9-X' + VERSION,
+
+  overlay                 = true,
+
+  explicit_plot_zorder    = true,
+
+  pyramiding              = 0,
+
+  default_qty_type        = strategy.percent_of_equity,
+
+  default_qty_value       = 50,
+
+  calc_on_every_tick      = false,
+
+  process_orders_on_close = true,
+
+  max_bars_back           = 500,
+
+  initial_capital         = 5000,
+
+  commission_type         = strategy.commission.percent,
+
+  commission_value        = 0.02,
+
+  max_lines_count         = 500
+
+  )
+
+//Truncate Function
+
+truncate(number, decimals) =>
+
+    factor = math.pow(10, decimals)
+
+    int(number * factor) / factor
+
+//
+
+// === INPUTS ===
+
+TPSType = input.string('Trailing',   'What TPS should be taken : ', options = ['ATR', 'Trailing', 'Options'])
+
+setupType = input.string('Open/Close', title='What Trading Setup should be taken : ', options=['Open/Close', 'Renko'])
+
+scolor = input(true, title='Show coloured Bars to indicate Trend?')
+
+almaRibbon = input(false, title='Enable Ribbon?')
+
+// === /INPUTS ===
+
+// Constants colours that include fully non-transparent option.
+
+green100 = #008000FF
+
+lime100 = #66bb6a
+
+red100 = #f7525f
+
+blue100 = #0000FFFF
+
+aqua100 = #00FFFFFF
+
+darkred100 = #8B0000FF
+
+gray100 = #808080FF
+
+/////////////////////////////////////////////
+
+// Create non-repainting security function
+
+rp_security(_symbol, _res, _src) =>
+
+    request.security(_symbol, _res, _src[1])
+
+//
+
+f_tfInMinutes() =>
+
+    _tfInMinutes = timeframe.period == '1' ? '3' : timeframe.period == '3' ? '5' : timeframe.period == '5' ? '15' : timeframe.period == '15' ? '30' : timeframe.period == '30' ? '60' : timeframe.period == '60' ? '240' : 'D'
+
+    _tfInMinutes
+
+my_time1 = f_tfInMinutes()
+
+tfmult = 18
+
+f_resInMinutes() => 
+
+    _resInMinutes = timeframe.multiplier * (
+
+      timeframe.isseconds ? 1. / 60. :
+
+      timeframe.isminutes ? 1.       :
+
+      timeframe.isdaily   ? 1440.    :
+
+      timeframe.isweekly  ? 10080.   :
+
+      timeframe.ismonthly ? 43800.   : na)
+
+my_time = str.tostring(f_resInMinutes()*tfmult)
+
+useSource = close
+
+enableFilter = input(true,  "Enable Backtesting Range Filtering")
+
+fromDate     = input.time(timestamp("01 Jan 2023 00:00 +0300"), "Start Date")
+
+toDate       = input.time(timestamp("31 Dec 2099 00:00 +0300"), "End Date")
+
+tradeDateIsAllowed = not enableFilter or (time >= fromDate and time <= toDate)
+
+filter1 = 'Filter with Atr'
+
+filter2 = 'Filter with RSI'
+
+filter3 = 'Atr or RSI'
+
+filter4 = 'Atr and RSI'
+
+filter5 = 'No Filtering'
+
+filter6 = 'Entry Only in sideways market(By ATR or RSI)'
+
+filter7 = 'Entry Only in sideways market(By ATR and RSI)'
+
+typefilter = input.string(filter5, title='Sideways Filtering Input', options=[filter1, filter2, filter3, filter4, filter5, filter6, filter7], group='Strategy Options')
+
+RSI = truncate(ta.rsi(close, input.int(7, group='RSI Filterring')), 2)
+
+toplimitrsi = input.int(45, title='TOP Limit', group='RSI Filterring')
+
+botlimitrsi = input.int(10, title='BOT Limit', group='RSI Filterring')
+
+atrfiltLen = 5
+
+atrMaType = 'EMA'
+
+atrMaLen = 5
+
+atra = request.security(syminfo.tickerid, '', ta.atr(atrfiltLen))
+
+atrMa = atrMaType == 'EM' ? ta.ema(atra, atrMaLen) : ta.sma(atra, atrMaLen)
+
+updm = ta.change(high)
+
+downdm = -ta.change(low)
+
+plusdm = na(updm) ? na : updm > downdm and updm > 0 ? updm : 0
+
+minusdm = na(downdm) ? na : downdm > updm and downdm > 0 ? downdm : 0
+
+cndSidwayss1 = atra >= atrMa
+
+cndSidwayss2 = RSI > toplimitrsi or RSI < botlimitrsi
+
+cndSidways = cndSidwayss1 or cndSidwayss2
+
+cndSidways1 = cndSidwayss1 and cndSidwayss2
+
+Sidwayss1 = atra <= atrMa
+
+Sidwayss2 = RSI < toplimitrsi and RSI > botlimitrsi
+
+Sidways = Sidwayss1 or Sidwayss2
+
+Sidways1 = Sidwayss1 and Sidwayss2
+
+trendType = typefilter == filter1 ? cndSidwayss1 : typefilter == filter2 ? cndSidwayss2 : typefilter == filter3 ? cndSidways : typefilter == filter4 ? cndSidways1 : typefilter == filter5 ? RSI > 0 : typefilter == filter6 ? Sidways : typefilter == filter7 ? Sidways1 : na
+
+// === /INPUTS ===
+
+tf = my_time
+
+r = ticker.heikinashi(syminfo.tickerid)
+
+openSeriesAlt = request.security(r, tf, open, lookahead=barmerge.lookahead_on)
+
+closeSeriesAlt = request.security(r, tf, close, lookahead=barmerge.lookahead_on)
+
+BUYOC = ta.crossover(closeSeriesAlt, openSeriesAlt) and setupType == "Open/Close" and trendType
+
+SELLOC = ta.crossunder(closeSeriesAlt, openSeriesAlt) and setupType == "Open/Close" and trendType
+
+// Renko Settings
+
+atrLen = 3
+
+isATR = true
+
+tradLen1 = 1000
+
+tradLen = tradLen1 * 1
+
+param = isATR ? ticker.renko(syminfo.tickerid, "ATR", atrLen) : ticker.renko(syminfo.tickerid, "Traditional", tradLen)
+
+renko_close = request.security(param, my_time, close, lookahead=barmerge.lookahead_on)
+
+renko_open = request.security(param, my_time, open, lookahead=barmerge.lookahead_on)
+
+// EMA Cross for Renko
+
+EMA1_length=input.int(2, "EMA1_length", group = "Renko Settings")
+
+EMA2_length=input.int(10, "EMA2_length", group = "Renko Settings")
+
+a = ta.ema(renko_close, EMA1_length)
+
+b = ta.ema(renko_close, EMA2_length)
+
+BUYR = ta.crossover(a, b) and setupType == "Renko" and trendType
+
+SELLR = ta.crossunder(a, b) and setupType == "Renko" and trendType
+
+sel_color = setupType == "Open/Close" ? closeSeriesAlt < openSeriesAlt : setupType == "Renko" ? renko_close < renko_open : na
+
+buy_color = setupType == "Open/Close" ? closeSeriesAlt > openSeriesAlt : setupType == "Renko" ? renko_close > renko_open : na
+
+sel_entry = setupType == "Open/Close" ? SELLOC : setupType == "Renko" ? SELLR : na
+
+buy_entry = setupType == "Open/Close" ? BUYOC : setupType == "Renko" ? BUYR : na
+
+trendColour = buy_color ? color.green : color.red
+
+bcolour = buy_color ? lime100 : red100
+
+barcolor(scolor ? bcolour : na, title='Bar Colours')
+
+p11=plot(almaRibbon and setupType == "Open/Close" ? closeSeriesAlt : almaRibbon and setupType == "Renko" ? renko_close : na, style=plot.style_circles, linewidth=1, color=color.new(trendColour, 80), title="RENKO_1")
+
+p22=plot(almaRibbon and setupType == "Open/Close" ? openSeriesAlt : almaRibbon and setupType == "Renko" ? renko_open : na, style=plot.style_circles, linewidth=1, color=color.new(trendColour, 80), title="RENKO_2")
+
+fill(p11, p22, color=color.new(trendColour, 50), title="RENKO_fill")
+
+// Triggers
+
+lxTrigger    = false
+
+sxTrigger    = false
+
+leTrigger    = buy_entry
+
+seTrigger    = sel_entry
+
+buy = leTrigger
+
+sell = seTrigger
+
+varip wasLong = false
+
+varip wasShort = false
+
+if barstate.isconfirmed
+
+    wasLong := false
+
+else 
+
+    if buy
+
+        wasLong := true
+
+if barstate.isconfirmed
+
+    wasShort := false
+
+else 
+
+    if sell
+
+        wasShort := true
+
+plotshape(wasLong, color = color.yellow)
+
+plotshape(wasShort, color = color.yellow)
+
+// Alert messages
+
+i_alert_txt_entry_long = "Short Exit"
+
+i_alert_txt_exit_long = "Long Exit"
+
+i_alert_txt_entry_short = "Go Short"
+
+i_alert_txt_exit_short = "Go Long"
+
+// Entries and Exits with Trailing
+
+if buy and TPSType == "Trailing" and tradeDateIsAllowed
+
+    strategy.close("Short" , alert_message = i_alert_txt_exit_short)
+
+    strategy.entry("Long" , strategy.long , alert_message = i_alert_txt_entry_long)    
+
+if sell and TPSType == "Trailing" and tradeDateIsAllowed
+
+    strategy.close("Long" , alert_message = i_alert_txt_exit_long)
+
+    strategy.entry("Short" , strategy.short, alert_message = i_alert_txt_entry_short)
+
+// Entries and Exits with Options
+
+if buy and TPSType == "Options" and tradeDateIsAllowed
+
+    strategy.entry("Long" , strategy.long , alert_message = i_alert_txt_entry_long)    
+
+if sell and TPSType == "Options" and tradeDateIsAllowed
+
+    strategy.close("Long" , alert_message = i_alert_txt_exit_long)
+
+// Risk Management
+
+G_RISK       = '■ ' + 'Risk Management'
+
+atrLength = 20
+
+profitFactor = 2.5
+
+stopFactor = 1
+
+tpatrValue = ta.atr(atrLength)
+
+takeProfit1_buy = 1 * profitFactor * tpatrValue
+
+takeProfit2_buy = 2 * profitFactor * tpatrValue
+
+takeProfit3_buy = 3 * profitFactor * tpatrValue
+
+stopLoss_buy = close - takeProfit1_buy
+
+takeProfit1_sell = 1 * profitFactor * tpatrValue
+
+takeProfit2_sell = 2 * profitFactor * tpatrValue
+
+takeProfit3_sell = 3 * profitFactor * tpatrValue
+
+stopLoss_sell = close + takeProfit1_sell
+
+// Tooltip and Messages
+
+T_LVL        = '(%) Exit Level'
+
+T_QTY        = '(%) Adjust trade exit volume'
+
+T_MSG        = 'Paste JSON message for your bot'
+
+O_LEMSG      = 'Long Entry'
+
+O_LXMSGSL    = 'Long SL'
+
+O_LXMSGTP1   = 'Long TP1'
+
+O_LXMSGTP2   = 'Long TP2'
+
+O_LXMSGTP3   = 'Long TP3'
+
+O_LXMSG      = 'Long Exit'
+
+O_SEMSG      = 'Short Entry'
+
+O_SXMSGSL    = 'Short SL'
+
+O_SXMSGA     = 'Short TP1'
+
+O_SXMSGB     = 'Short TP2'
+
+O_SXMSGC     = 'Short TP3'
+
+O_SXMSGX     = 'Short Exit'
+
+pip_size = syminfo.mintick * (syminfo.type == "forex" ? 10 : 1)
+
+i_lxQtyTP1   = input.float (50,        'Qty   TP1'                     , group = G_RISK,     tooltip = T_QTY)
+
+i_lxQtyTP2   = input.float (30,        'Qty   TP2'                     , group = G_RISK,     tooltip = T_QTY)
+
+i_lxQtyTP3   = input.float (20,        'Qty   TP3'                     , group = G_RISK,     tooltip = T_QTY)
+
+i_lxLvlSL    = leTrigger ? takeProfit1_buy : seTrigger ? takeProfit1_sell : na
+
+i_sxLvlTP1   = i_lxLvlTP1
+
+i_sxQtyTP1   = i_lxQtyTP1
+
+i_sxLvlTP2   = i_lxLvlTP2
+
+i_sxQtyTP2   = i_lxQtyTP2
+
+i_sxLvlTP3   = i_lxLvlTP3
+
+i_sxQtyTP3   = i_lxQtyTP3
+
+i_sxLvlSL    = i_lxLvlSL
+
+G_MSG        = '■ ' + 'Webhook Message'
+
+i_leMsg      = O_LEMSG
+
+i_lxMsgSL    = O_LXMSGSL
+
+i_lxMsgTP1   = O_LXMSGTP1
+
+i_lxMsgTP2   = O_LXMSGTP2
+
+i_lxMsgTP3   = O_LXMSGTP3
+
+i_lxMsg      = O_LXMSG
+
+i_seMsg      = O_SEMSG
+
+i_sxMsgSL    = O_SXMSGSL
+
+i_sxMsgTP1   = O_SXMSGA
+
+i_sxMsgTP2   = O_SXMSGB
+
+i_sxMsgTP3   = O_SXMSGC
+
+i_sxMsg      = O_SXMSGX
+
+i_src        = close
+
+G_DISPLAY    = 'Display'
+
+i_alertOn    = true
+
+i_barColOn   = true
+
+// TP calculation function
+
+f_tp(_condition, _conditionValue, _leTrigger, _seTrigger, _src, _lxLvlTP, _sxLvlTP)=>
+
+    var float _tpLine = 0.0
+
+    _topLvl     = _src + _lxLvlTP
+
+    _botLvl     = _src - _lxLvlTP
+
+    _tpLine    := _condition[1] !=  _conditionValue and _leTrigger ? _topLvl :
+
+                  _condition[1] != -_conditionValue and _seTrigger ? _botLvl :
+
+                  nz(_tpLine[1])
+
+    [_tpLine]
+
+f_cross(_scr1, _scr2, _over)=>
+
+    _cross   = _over ? _scr1 > _scr2 and _scr1[1] < _scr2[1] :
+
+                       _scr1 < _scr2 and _scr1[1] > _scr2[1]
+
+// State variables
+
+var float condition = 0.0
+
+var float slLine    = 0.0
+
+var float entryLine = 0.0
+
+entryLine   := leTrigger and condition[1] <=  0.0 ? close :
+
+               seTrigger and condition[1] >=  0.0 ? close : nz(entryLine[1])
+
+slTopLvl    = TPSType == "Fixed %" ? i_src + (i_src * (i_lxLvlSL / 100)) : i_src + i_lxLvlSL
+
+slBotLvl    = TPSType == "Fixed %" ? i_src - (i_src * (i_sxLvlSL / 100)) : i_src - i_lxLvlSL
+
+slLine     := condition[1] <=  0.0 and leTrigger ? slBotLvl :
+
+              condition[1] >=  0.0 and seTrigger ? slTopLvl : nz(slLine[1])
+
+slLong      = f_cross(low,  slLine, false)
+
+slShort     = f_cross(high, slLine, true )
+
+[tp3Line]    = f_tp(condition, 1.2,leTrigger, seTrigger, i_src, i_lxLvlTP3, i_sxLvlTP3)
+
+[tp2Line]    = f_tp(condition, 1.1,leTrigger, seTrigger, i_src, i_lxLvlTP2, i_sxLvlTP2)
+
+[tp1Line]    = f_tp(condition, 1.0,leTrigger, seTrigger, i_src, i_lxLvlTP1, i_sxLvlTP1)
+
+tp3Long      = f_cross(high, tp3Line, true )
+
+tp3Short     = f_cross(low,  tp3Line, false)
+
+tp2Long      = f_cross(high, tp2Line, true )
+
+tp2Short     = f_cross(low,  tp2Line, false)
+
+tp1Long      = f_cross(high, tp1Line, true )
+
+tp1Short     = f_cross(low,  tp1Line, false)
+
+switch
+
+    leTrigger and condition[1] <=  0.0 => condition :=  1.0
+
+    seTrigger and condition[1] >=  0.0 => condition := -1.0
+
+    tp3Long   and condition[1] ==  1.2 => condition :=  1.3
+
+    tp3Short  and condition[1] == -1.2 => condition := -1.3
+
+    tp2Long   and condition[1] ==  1.1 => condition :=  1.2
+
+    tp2Short  and condition[1] == -1.1 => condition := -1.2
+
+    tp1Long   and condition[1] ==  1.0 => condition :=  1.1
+
+    tp1Short  and condition[1] == -1.0 => condition := -1.1
+
+    slLong    and condition[1] >=  1.0 => condition :=  0.0
+
+    slShort   and condition[1] <= -1.0 => condition :=  0.0
+
+    lxTrigger and condition[1] >=  1.0 => condition :=  0.0
+
+    sxTrigger and condition[1] <= -1.0 => condition :=  0.0
+
+longE        = leTrigger and condition[1] <=  0.0 and condition ==  1.0
+
+shortE       = seTrigger and condition[1] >=  0.0 and condition == -1.0
+
+longX        = lxTrigger and condition[1] >=  1.0 and condition ==  0.0
+
+shortX       = sxTrigger and condition[1] <= -1.0 and condition ==  0.0
+
+longSL       = slLong    and condition[1] >=  1.0 and condition ==  0.0
+
+shortSL      = slShort   and condition[1] <= -1.0 and condition ==  0.0
+
+longTP3      = tp3Long   and condition[1] ==  1.2 and condition ==  1.3
+
+shortTP3     = tp3Short  and condition[1] == -1.2 and condition == -1.3
+
+longTP2      = tp2Long   and condition[1] ==  1.1 and condition ==  1.2
+
+shortTP2     = tp2Short  and condition[1] == -1.1 and condition == -1.2
+
+longTP1      = tp1Long   and condition[1] ==  1.0 and condition ==  1.1
+
+shortTP1     = tp1Short  and condition[1] == -1.0 and condition == -1.1
+
+// Strategy orders - Long
+
+if strategy.position_size <= 0 and longE and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.entry(      'Long',      strategy.long,      alert_message    = i_leMsg,      comment          = 'LE')
+
+if strategy.position_size > 0 and condition ==  1.0 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'LXTP1',      from_entry       = 'Long',      qty_percent      = i_lxQtyTP1,      limit            = tp1Line,      stop             = slLine,      comment_profit   = 'LXTP1',      comment_loss     = 'SL',      alert_profit     = i_lxMsgTP1,      alert_loss       = i_lxMsgSL)
+
+if strategy.position_size > 0 and condition ==  1.1 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'LXTP2',      from_entry       = 'Long',      qty_percent      = i_lxQtyTP2,      limit            = tp2Line,      stop             = slLine,      comment_profit   = 'LXTP2',      comment_loss     = 'SL',      alert_profit     = i_lxMsgTP2,      alert_loss       = i_lxMsgSL)
+
+if strategy.position_size > 0 and condition ==  1.2 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'LXTP3',      from_entry       = 'Long',      qty_percent      = i_lxQtyTP3,      limit            = tp3Line,      stop             = slLine,      comment_profit   = 'LXTP3',      comment_loss     = 'SL',      alert_profit     = i_lxMsgTP3,      alert_loss       = i_lxMsgSL)
+
+if longX and tradeDateIsAllowed
+
+    strategy.close(      'Long',      alert_message    = i_lxMsg,      comment          = 'LX')
+
+// Strategy orders - Short
+
+if strategy.position_size >= 0 and shortE and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.entry(      'Short',      strategy.short,      alert_message    = i_leMsg,      comment          = 'SE')
+
+if strategy.position_size < 0 and condition == -1.0 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'SXTP1',      from_entry       = 'Short',      qty_percent      = i_sxQtyTP1,      limit            = tp1Line,      stop             = slLine,      comment_profit   = 'SXTP1',      comment_loss     = 'SL',      alert_profit     = i_sxMsgTP1,      alert_loss       = i_sxMsgSL)
+
+if strategy.position_size < 0 and condition == -1.1 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'SXTP2',      from_entry       = 'Short',      qty_percent      = i_sxQtyTP2,      limit            = tp2Line,      stop             = slLine,      comment_profit   = 'SXTP2',      comment_loss     = 'SL',      alert_profit     = i_sxMsgTP2,      alert_loss       = i_sxMsgSL)
+
+if strategy.position_size < 0 and condition == -1.2 and TPSType == "ATR" and tradeDateIsAllowed
+
+    strategy.exit(      id               = 'SXTP3',      from_entry       = 'Short',      qty_percent      = i_sxQtyTP3,      limit            = tp3Line,      stop             = slLine,      comment_profit   = 'SXTP3',      comment_loss     = 'SL',      alert_profit     = i_sxMsgTP3,      alert_loss       = i_sxMsgSL)
+
+if shortX and tradeDateIsAllowed
+
+    strategy.close(      'Short',      alert_message    = i_sxMsg,      comment          = 'SX')
+
+// Visual plots
+
+c_tp         = leTrigger or seTrigger ? na :
+
+               condition == 0.0       ? na : color.green
+
+c_entry      = leTrigger or seTrigger ? na :
+
+               condition == 0.0       ? na : color.blue
+
+c_sl         = leTrigger or seTrigger ? na :
+
+               condition == 0.0       ? na : color.red
+
+p_tp1Line    = plot (  condition ==  1.0 or  condition == -1.0  ?  tp1Line : na,  title      = "TP Line 1",  color      = c_tp,  linewidth  = 1,  style      = plot.style_linebr)
+
+p_tp2Line    = plot (  condition ==  1.0 or  condition == -1.0 or    condition ==  1.1 or  condition == -1.1  ? tp2Line : na,  title      = "TP Line 2",  color      = c_tp,  linewidth  = 1,  style      = plot.style_linebr)
+
+p_tp3Line    = plot (  condition ==  1.0 or  condition == -1.0 or    condition ==  1.1 or  condition == -1.1 or  condition ==  1.2 or  condition == -1.2  ? tp3Line : na,  title      = "TP Line 3",  color      = c_tp,  linewidth  = 1,  style      = plot.style_linebr)
+
+p_entryLine  = plot (  condition >=  1.0 or  condition <= -1.0  ? entryLine : na,  title      = "Entry Line",  color      = c_entry,  linewidth  = 1,  style      = plot.style_linebr)
+
+p_slLine     = plot (  condition ==  1.0 or  condition == -1.0 or    condition ==  1.1 or  condition == -1.1 or  condition ==  1.2 or  condition == -1.2  ? slLine : na,  title      = "SL Line",  color      = c_sl,  linewidth  = 1,  style      = plot.style_linebr)
+
+fill(  p_entryLine, p_slLine,  color      = leTrigger or seTrigger ? na :color.new(color.red, 90))
+
+// Alert labels
+
+plotshape(  i_alertOn and longE,  title      = 'Long',  text       = 'Long',  textcolor  = color.white,  color      = color.green,  style      = shape.labelup,  size       = size.tiny,  location   = location.belowbar)
+
+plotshape(  i_alertOn and shortE,  title      = 'Short',  text       = 'Short',  textcolor  = color.white,  color      = color.red,  style      = shape.labeldown,  size       = size.tiny,  location   = location.abovebar)
+
+plotshape(  i_alertOn and (longX or shortX) ? close : na,  title      = 'Close',  text       = 'Close',  textcolor  = color.white,  color      = color.gray,  style      = shape.labelup,  size       = size.tiny,  location   = location.absolute)
+
+plotshape(  i_alertOn and (longTP1 or shortTP1) ? close : na,  title      = "TP1 Cross",  text       = "TP1",  textcolor  = color.white,  color      = #ec407a,  style      = shape.labelup,  size       = size.tiny,  location   = location.absolute)
+
+plotshape(  i_alertOn and (longTP2 or shortTP2) ? close : na,  title      = "TP2 Cross",  text       = "TP2",  textcolor  = color.white,  color      = #ec407a,  style      = shape.labelup,  size       = size.tiny,  location   = location.absolute)
+
+plotshape(  i_alertOn and (longTP3 or shortTP3) ? close : na,  title      = "TP3 Cross",  text       = "TP3",  textcolor  = color.white,  color      = #ec407a,  style      = shape.labelup,  size       = size.tiny,  location   = location.absolute)
+
+plotshape(  i_alertOn and (longSL or shortSL) ? close : na,  title      = "SL Cross",  text       = "SL",  textcolor  = color.white,  color      = color.maroon,  style      = shape.labelup,  size       = size.tiny,  location   = location.absolute)
+
+// Debug plots
+
+plot(  na,  title      = "─── <debug> ───",  editable   = false,  display    = display.data_window)
+
+plot(  condition,  title      = "condition",  editable   = false,  display    = display.data_window)
+
+plot(  strategy.position_size * 100,  title      = ".position_size",  editable   = false,  display    = display.data_window)
+
+// Extended line drawing for ATR mode
+
+var line[]  a_slLine     = array.new_line(1)
+
+var line[]  a_entryLine  = array.new_line(1)
+
+var line[]  a_tp3Line    = array.new_line(1)
+
+var line[]  a_tp2Line    = array.new_line(1)
+
+var line[]  a_tp1Line    = array.new_line(1)
+
+var label[] a_slLabel    = array.new_label(1)
+
+var label[] a_tp3label   = array.new_label(1)
+
+var label[] a_tp2label   = array.new_label(1)
+
+var label[] a_tp1label   = array.new_label(1)
+
+var label[] a_entryLabel = array.new_label(1)
+
+newEntry     = longE or shortE
+
+entryIndex   = 1
+
+entryIndex   := newEntry ? bar_index : nz(entryIndex[1])
+
+lasTrade     = bar_index >= entryIndex
+
+l_right      = 10
+
+if TPSType == "ATR"
+
+    line.delete(  f_qDq(a_slLine,  line.new(   entryIndex,   slLine,   last_bar_index + l_right,   slLine,   style = line.style_solid,   color = c_sl))) 
+
+if TPSType == "ATR"
+
+    line.delete(  f_qDq(a_entryLine,  line.new(   entryIndex,   entryLine,   last_bar_index + l_right,   entryLine,   style = line.style_solid,   color = color.blue)))
+
+if TPSType == "ATR"
+
+    line.delete(  f_qDq(a_tp3Line,  line.new(   entryIndex,   tp3Line,   last_bar_index + l_right,   tp3Line,   style = line.style_solid,   color = c_tp)))
+
+if TPSType == "ATR"
+
+    line.delete(  f_qDq(a_tp2Line,  line.new(   entryIndex,   tp2Line,   last_bar_index + l_right,   tp2Line,   style = line.style_solid,   color = c_tp)))
+
+if TPSType == "ATR"
+
+    line.delete(  f_qDq(a_tp1Line,  line.new(   entryIndex,   tp1Line,   last_bar_index + l_right,   tp1Line,   style = line.style_solid,   color = c_tp)))
+
+if TPSType == "ATR"
+
+    label.delete(  f_qDq(a_slLabel,  label.new(   last_bar_index + l_right,   slLine,   'SL: ' + str.tostring(slLine, '##.###'),   style = label.style_label_left,   textcolor  = color.white,   color = c_sl)))
+
+if TPSType == "ATR"
+
+    label.delete(  f_qDq(a_entryLabel,  label.new(   last_bar_index + l_right,   entryLine,   'Entry: ' + str.tostring(entryLine, '##.###'),   style = label.style_label_left,   textcolor  = color.white,   color = color.blue)))
+
+if TPSType == "ATR"
+
+    label.delete(  f_qDq(a_tp3label,  label.new(   last_bar_index + l_right,   tp3Line,   'TP3: ' + str.tostring(tp3Line, '##.###') + " - Target Pips : - " + str.tostring(longE ? tp3Line - entryLine : entryLine - tp3Line, "#.##"),   style = label.style_label_left,   textcolor  = color.white,   color = c_tp)))
+
+if TPSType == "ATR"
+
+    label.delete(  f_qDq(a_tp2label,  label.new(   last_bar_index + l_right,   tp2Line,   'TP2: ' + str.tostring(tp2Line, '##.###'),   style = label.style_label_left,   textcolor  = color.white,   color = c_tp)))
+
+if TPSType == "ATR"
+
+    label.delete(  f_qDq(a_tp1label,  label.new(   last_bar_index + l_right,   tp1Line,   'TP1: ' + str.tostring(tp1Line, '##.###'),   style = label.style_label_left,   textcolor  = color.white,   color = c_tp)))
+
+// Bar colors
+
+c_barCol = close > open ? color.rgb(120, 9, 139) : color.rgb(69, 155, 225)
+
+barcolor( i_barColOn ? c_barCol : na)
+
+// Alerts
+
+if longE or shortE or longX or shortX
+
+    alert(message = 'Any Alert',   freq = alert.freq_once_per_bar_close)
+
+if longE
+
+    alert(message = 'Long Entry',  freq = alert.freq_once_per_bar_close)
+
+if shortE
+
+    alert(message = 'Short Entry', freq = alert.freq_once_per_bar_close)
+
+if longX
+
+    alert(message = 'Long Exit',   freq = alert.freq_once_per_bar_close)
+
+if shortX
+
+    alert(message = 'Short Exit',  freq = alert.freq_once_per_bar_close)
+
+// Strategy Performance Dashboard (drawTester)
+
+drawTester = input.bool(false, "Strategy Performance", group='Dashboards', inline="Show Dashboards")
+
+var balance = strategy.initial_capital
+
+var drawdown = 0.0
+
+var maxDrawdown = 0.0
+
+var maxBalance = 0.0
+
+var table testTable = table.new(position.top_right, 5, 2, border_width=1)
+
+f_fillCell(_table, _column, _row, _title, _value, _bgcolor, _txtcolor) =>
+
+    _cellText = _title + "\n" + _value
+
+    table.cell(_table, _column, _row, _cellText, bgcolor=_bgcolor, text_color=_txtcolor)
+
+if drawTester and tradeDateIsAllowed
+
+    if barstate.islastconfirmedhistory
+
+        dollarReturn = strategy.netprofit
+
+        f_fillCell(testTable, 0, 0, "Total Trades:", str.tostring(strategy.closedtrades), bgcolor, color.white)
+
+        f_fillCell(testTable, 0, 1, "Win Rate:", str.tostring(truncate((strategy.wintrades/strategy.closedtrades)*100,2)) + "%", bgcolor, color.white)
+
+        f_fillCell(testTable, 1, 0, "Starting:", "$" + str.tostring(strategy.initial_capital), bgcolor, color.white)
+
+        f_fillCell(testTable, 1, 1, "Ending:", "$" + str.tostring(truncate(strategy.initial_capital + strategy.netprofit,2)), bgcolor, color.white)
+
+        f_fillCell(testTable, 2, 0, "Avg Win:", "$"+ str.tostring(truncate(strategy.grossprofit / strategy.wintrades, 2)), bgcolor, color.white)
+
+        f_fillCell(testTable, 2, 1, "Avg Loss:", "$"+ str.tostring(truncate(strategy.grossloss / strategy.losstrades, 2)), bgcolor, color.white)
+
+        f_fillCell(testTable, 3, 0, "Profit Factor:", str.tostring(truncate(strategy.grossprofit / strategy.grossloss,2)), strategy.grossprofit > strategy.grossloss ? color.green : color.red, color.white)
+
+        f_fillCell(testTable, 3, 1, "Max Runup:",  str.tostring(truncate(strategy.max_runup, 2 )), bgcolor, color.white)
+
+        f_fillCell(testTable, 4, 0, "Return:", (dollarReturn > 0 ? "+" : "") + str.tostring(truncate((dollarReturn / strategy.initial_capital)*100,2)) + "%", dollarReturn > 0 ? color.green : color.red, color.white)
+
+        f_fillCell(testTable, 4, 1, "Max DD:", str.tostring(truncate((strategy.max_drawdown / strategy.equity) * 100 ,2)) + "%", color.red, color.white)
+
+// Weekly Performance Dashboard
+
+i_showweeklyPerformance = input.bool(false, 'Weekly Performance', group='Dashboards', inline="Show Dashboards")
+
+i_table_pos                 = "Top Left"
+
+i_text_size                 = "Normal"
+
+i_check_open_close          = "Opened"
+
+i_timezone                  = "Exchange"
+
+table_pos = switch i_table_pos
+
+    "Bottom Right"  => position.bottom_right
+
+    "Bottom Left"   => position.bottom_left
+
+    "Top Right"     => position.top_right
+
+    "Top Left"      => position.top_left
+
+timezone_setting = i_timezone == "Exchange" ? syminfo.timezone : i_timezone
+
+text_size = switch i_text_size
+
+    "Small"         => size.small
+
+    "Normal"        => size.normal
+
+    "Large"         => size.large
+
+var string[] t_column_names          = array.from( "", "Sun", "Mon", "Tue", "Wed", "Thur", "Fri", "Sat")
+
+var string[] t_row_names             = array.from("", "Total Trades", "Loss", "Win", "Win Rate" )
+
+var t_column_size                    = array.size(t_column_names)
+
+var t_row_size                       = array.size(t_row_names)
+
+var trade_number = -1
+
+if strategy.closedtrades > strategy.closedtrades[1]
+
+    trade_number += 1
+
+f_strategy_closedtrades_hour() =>
+
+    switch 
+
+        i_check_open_close =="Closed" => dayofweek(strategy.closedtrades.exit_time(trade_number), timezone_setting)
+
+        i_check_open_close =="Opened"  => dayofweek(strategy.closedtrades.entry_time(trade_number), timezone_setting)
+
+var string[] array1 = array.new_string(5)
+
+var string[] array2 = array.new_string(5)
+
+var string[] array3 = array.new_string(5)
+
+var string[] array4 = array.new_string(5)
+
+var string[] array5 = array.new_string(5)
+
+var string[] array6 = array.new_string(5)
+
+var string[] array7 = array.new_string(5)
+
+f_pass_data_to_array(_i, _array) =>
+
+    [cl, loss, win] = f_data(_i)
+
+    array.set(_array,1 , cl)
+
+    array.set(_array,2,loss)
+
+    array.set(_array,3,win)
+
+    if cl != "" 
+
+        array.set(_array,4,str.tostring(str.tonumber(win) / str.tonumber(cl) * 100 , "##") + " %")
+
+    if cl != "" and win == ""
+
+        array.set(_array,4,"0 %")
+
+for i = 1 to 7 
+
+    switch
+
+        i == 1 => f_pass_data_to_array(i,array1)
+
+        i == 2 => f_pass_data_to_array(i,array2)
+
+        i == 3 => f_pass_data_to_array(i,array3)
+
+        i == 4 => f_pass_data_to_array(i,array4)
+
+        i == 5 => f_pass_data_to_array(i,array5)
+
+        i == 6 => f_pass_data_to_array(i,array6)
+
+        i == 7 => f_pass_data_to_array(i,array7)
+
+f_retrieve_data_to_table(_i, _j) =>
+
+    switch
+
+        _i == 1 => array.get(array1, _j)
+
+        _i == 2 => array.get(array2, _j)
+
+        _i == 3 => array.get(array3, _j)
+
+        _i == 4 => array.get(array4, _j)
+
+        _i == 5 => array.get(array5, _j)
+
+        _i == 6 => array.get(array6, _j)
+
+        _i == 7 => array.get(array7, _j)
+
+create_table(_col, _row, _txt) =>
+
+    var table _tbl = table.new(position = table_pos, columns = t_column_size , rows = t_row_size, border_width=1)
+
+    color _color = _row == 0 or _col == 0 ? color.rgb(3, 62, 106) : color.rgb(2, 81, 155)
+
+    table.cell(_tbl, _col, _row, _txt, bgcolor = _color, text_color = color.white, text_size = text_size)
+
+if barstate.islastconfirmedhistory and i_showweeklyPerformance and tradeDateIsAllowed
+
+    for i = 0 to t_column_size - 1 by 1
+
+        for j = 0 to t_row_size - 1 by 1
+
+            _txt = "" 
+
+            if i >= 0 and j == 0
+
+                _txt := array.get(t_column_names, i)
+
+            if j >= 0 and i == 0
+
+                _txt := array.get(t_row_names, j)
+
+            if  i >= 1 and j >= 1 and j <= 5
+
+                _txt :=  f_retrieve_data_to_table( i , j)
+
+            create_table(i ,j , _txt)
+
+// Monthly Performance Dashboard
+
+i_showMonthlyPerformance = input.bool(false, 'Monthly Performance', group='Dashboards', inline="Show Dashboards")
+
+i_tableTextSize = "Normal"
+
+i_monthlyReturnPercision = 2
+
+table_text_size(s) =>
+
+    switch s
+
+        "Auto"   => size.auto   
+
+        "Huge"   => size.huge   
+
+        "Large"  => size.large  
+
+        "Normal" => size.normal 
+
+        "Small"  => size.small
+
+        => size.tiny
+
+tableTextSize = table_text_size(i_tableTextSize)
+
+if i_showMonthlyPerformance and tradeDateIsAllowed
+
+    new_month = month(time) != month(time[1])
+
+    new_year  = year(time)  != year(time[1])
+
+    eq = strategy.equity
+
+    bar_pnl = eq / eq[1] - 1
+
+    cur_month_pnl = 0.0
+
+    cur_year_pnl  = 0.0
+
+    cur_month_pnl := new_month ? 0.0 : 
+
+                     (1 + cur_month_pnl[1]) * (1 + bar_pnl) - 1 
+
+    cur_year_pnl := new_year ? 0.0 : 
+
+                     (1 + cur_year_pnl[1]) * (1 + bar_pnl) - 1  
+
+    var month_pnl  = array.new_float(0)
+
+    var month_time = array.new_int(0)
+
+    var year_pnl  = array.new_float(0)
+
+    var year_time = array.new_int(0)
+
+    last_computed = false
+
+    if (not na(cur_month_pnl[1]) and (new_month or barstate.islastconfirmedhistory))
+
+        if (last_computed[1])
+
+            array.pop(month_pnl)
+
+            array.pop(month_time)
+
+        array.push(month_pnl , cur_month_pnl[1])
+
+        array.push(month_time, time[1])
+
+    if (not na(cur_year_pnl[1]) and (new_year or barstate.islastconfirmedhistory))
+
+        if (last_computed[1])
+
+            array.pop(year_pnl)
+
+            array.pop(year_time)
+
+        array.push(year_pnl , cur_year_pnl[1])
+
+        array.push(year_time, time[1])
+
+    last_computed := barstate.islastconfirmedhistory ? true : nz(last_computed[1])
+
+    if (barstate.islastconfirmedhistory)
+
+        var monthly_table = table.new(position.bottom_right, columns = 14, rows = array.size(year_pnl) + 1, border_width = 1)
+
+        table.cell(monthly_table, 0,  0, "",     bgcolor = #cccccc, text_size=tableTextSize)
+
+        table.cell(monthly_table, 1,  0, "Jan",  bgcolor = #cccccc, text_size=tableTextSize)
+
+        // ... (monthly table headers)
+
+// Telegram Dashboard
+
+var table myTable = table.new(position.top_center, 1, 1, border_width=1, frame_color=color.black, bgcolor=color.white)
+
+table.cell(myTable, 0, 0, "Join Telegram @freeindicatores", bgcolor=color.blue, text_color=color.white, text_size=size.normal)
