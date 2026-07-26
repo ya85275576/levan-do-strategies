@@ -29,7 +29,7 @@ module.exports = {
                 NODE_ENV: 'development',
                 PYTHONUNBUFFERED: '1',
                 EXCHANGE_NETWORK: 'testnet',
-                DRY_RUN: 'true',
+                DRY_RUN: 'false',
                 LOG_LEVEL: 'INFO',
                 SETUP_TYPE: 'Open/Close',
                 TPS_TYPE: 'Trailing',

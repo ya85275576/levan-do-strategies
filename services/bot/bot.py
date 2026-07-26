@@ -876,6 +876,7 @@ class OkxTradingBot:
             symbol=self.symbols[0] if self.symbols else "BTC-USDT",
             leverage=config.get("default_leverage", 1),
             position_mode=config.get("position_mode", "isolated"),
+            simulated_trading=config.get("is_testnet", False),
         )
 
         # 交易单元: {symbol: SymbolTradingUnit}
