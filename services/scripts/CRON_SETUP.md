@@ -40,9 +40,27 @@ node scripts/check-status.js --json
 # 保存状态并增量对比
 node scripts/check-status.js --save-state
 
+# 简洁通知行（适合推送/短信）
+node scripts/check-status.js --notify
+
+# POST 结果到外部 webhook 服务
+node scripts/check-status.js --webhook=https://your-webhook.example.com/endpoint
+
+# 组合使用：保存状态 + 通知行 + webhook
+node scripts/check-status.js --save-state --notify --webhook=https://your-webhook.example.com/endpoint
+
 # 指定自定义 URL
 node scripts/check-status.js --url=http://localhost:3000
 ```
+
+## 标志说明
+
+| 标志 | 说明 |
+|------|------|
+| `--json` | JSON 格式输出（程序化解析） |
+| `--save-state` | 保存状态到文件，下次运行时增量对比 |
+| `--notify` | 输出简洁通知行（一行内概括核心状态） |
+| `--webhook=<URL>` | POST 结果到指定 URL（JSON body） |
 
 ## 状态文件
 

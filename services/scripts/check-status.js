@@ -3,10 +3,12 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                          # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                   # JSON 格式输出
+ *   node scripts/check-status.js --save-state             # 自动保存状态到文件（增量对比）
+ *   node scripts/check-status.js --notify                 # 简洁通知行（适合推送/短信）
+ *   node scripts/check-status.js --webhook=https://...    # POST 结果到外部服务
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
@@ -344,6 +346,65 @@ function saveState(data) {
   }
 }
 
+// ======== 简洁通知行输出 ========
+
+function buildNotifyLine(result) {
+  if (!result.success) {
+    return `❌ 检查失败: ${result.error}`;
+  }
+
+  const s = result.summary;
+  const parts = [];
+
+  // 进程状态
+  parts.push(s.processesOnline ? '✅进程OK' : '❌进程异常');
+  // 交易所
+  parts.push(s.exchangeOnline ? '✅交易所OK' : '❌交易所断开');
+  // 系统
+  parts.push(s.systemHealthy ? '✅系统OK' : '⚠️系统负载高');
+  // 信号
+  const newCount = s.newSignals;
+  if (newCount !== null && newCount > 0) {
+    parts.push(`📊新信号+${newCount}(共${s.totalSignals})`);
+  } else if (newCount !== null && newCount === 0) {
+    parts.push(`📊无新信号(${s.totalSignals})`);
+  } else {
+    parts.push(`📊${s.totalSignals}条信号`);
+  }
+
+  // 最近一条信号
+  if (s.recentSignals && s.recentSignals.length > 0) {
+    const last = s.recentSignals[0];
+    parts.push(`${last.symbol}@${last.type}`);
+  }
+
+  return `🤖 ${parts.join(' | ')}`;
+}
+
+async function postWebhook(url, result) {
+  try {
+    const body = JSON.stringify({
+      type: 'bot-check',
+      timestamp: new Date().toISOString(),
+      summary: result.summary,
+      notify: buildNotifyLine(result),
+    });
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) {
+      console.error(`[Webhook] ⚠️ POST ${resp.status}: ${resp.statusText}`);
+    } else {
+      console.log(`[Webhook] ✅ 已发送到 ${url}`);
+    }
+  } catch (err) {
+    console.error(`[Webhook] ⚠️ 发送失败: ${err.message}`);
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,6 +413,9 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookArg = args.find(a => a.startsWith('--webhook='));
+  const webhookUrl = webhookArg ? webhookArg.split('=').slice(1).join('=') : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -378,10 +442,21 @@ async function main() {
     });
   }
 
+  // 输出简洁通知行
+  if (notifyMode) {
+    console.log(buildNotifyLine(result));
+  }
+
+  // 输出完整报告或 JSON
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
-  } else {
+  } else if (!notifyMode) {
     console.log(result.report);
+  }
+
+  // 发送 webhook
+  if (webhookUrl) {
+    await postWebhook(webhookUrl, result);
   }
 }
 
