@@ -6,11 +6,17 @@
  *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
  *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --save-state        # 自动保存状态到文件（增量对比）
+ *   node scripts/check-status.js --notify            # 输出简洁通知行（适合推送）
+ *   node scripts/check-status.js --webhook           # 发送结果到默认 Webhook 服务
+ *   node scripts/check-status.js --webhook-url=...   # 发送结果到自定义 Webhook URL
+ *   node scripts/check-status.js --save-state --notify --webhook  # 完整检查
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
  *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   带通知:     cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state --notify
+ *   完整模式:   cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state --notify --webhook
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -24,6 +30,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const API_URL = process.env.API_URL || 'http://43.133.210.83:3000';
 const TIMEOUT = 10000; // 10s
 const STATE_FILE = join(__dirname, '..', '.check-state.json');
+const NOTIFY_DEFAULT_WEBHOOK_URL = process.env.CHECK_WEBHOOK_URL || 'http://43.133.210.83:3000/webhook/check-status';
 
 // ======== 辅助函数 ========
 
@@ -90,6 +97,57 @@ const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const CYAN = '\x1b[36m';
 const GRAY = '\x1b[90m';
+
+// ======== 通知行生成 ========
+
+function generateNotifyLine(result) {
+  const s = result.summary;
+  const d = result.data;
+
+  // 进程健康
+  const procIcon = s.processesOnline ? '✅' : '❌';
+  // 交易所连接
+  const exIcon = s.exchangeOnline ? '🔗' : '🔌';
+  // 系统健康
+  const sysIcon = s.systemHealthy ? '🖥️' : '⚠️';
+
+  // 信号变化
+  let signalStr;
+  let newSignalIcon = '📡';
+  if (s.newSignals !== null && s.newSignals > 0) {
+    signalStr = `${s.totalSignals}信号(+${s.newSignals}新增)`;
+    newSignalIcon = '🆕';
+  } else if (s.newSignals !== null && s.newSignals === 0) {
+    signalStr = `${s.totalSignals}信号(无新增)`;
+  } else {
+    signalStr = `${s.totalSignals}信号`;
+  }
+
+  // 最新信号
+  let latestStr = '';
+  const recent = s.recentSignals || [];
+  if (recent.length > 0) {
+    const r = recent[0];
+    latestStr = ` | latest: ${r.type} ${r.symbol}${r.price ? ' $' + r.price : ''}`;
+  }
+
+  // 内存/磁盘
+  const sys = d.system;
+  let resourceStr = '';
+  if (sys) {
+    resourceStr = ` | 内存${sys.memory.usagePercent}% 磁盘${sys.disk.usagePercent}%`;
+  }
+
+  // 持仓数量
+  const posCount = (d.positions || []).length;
+  let posStr = '';
+  if (posCount > 0) {
+    posStr = ` | 💼${posCount}持仓`;
+  }
+
+  const line = `🤖 LE VAN DO® | ${procIcon}进程 ${exIcon}交易 ${sysIcon}系统 | ${newSignalIcon}${signalStr}${latestStr}${posStr}${resourceStr} | ${s.timestamp.substring(0, 19).replace('T', ' ')}`;
+  return line;
+}
 
 // ======== 主检查逻辑 ========
 
@@ -322,6 +380,21 @@ export async function checkStatus(options = {}) {
       recentSignals: recent.slice(0, 10),
     },
     serverUrl: url,
+    notifyLine: generateNotifyLine({
+      success: true,
+      data,
+      summary: {
+        timestamp: now,
+        totalSignals: total,
+        prevTotal,
+        newSignals: prevTotal !== undefined ? total - prevTotal : null,
+        processesOnline: processHealthy,
+        exchangeOnline: exchangeHealthy,
+        systemHealthy: allHealthy,
+        recentSignals: recent.slice(0, 10),
+      },
+      serverUrl: url,
+    }),
   };
 }
 
@@ -344,6 +417,29 @@ function saveState(data) {
   }
 }
 
+// ======== Webhook 发送 ========
+
+async function postToWebhook(url, payload) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      console.error(`[Webhook] ⚠️ HTTP ${resp.status}: ${resp.statusText}`);
+    } else {
+      console.log(`[Webhook] ✅ 已发送到 ${url}`);
+    }
+  } catch (err) {
+    console.error(`[Webhook] ⚠️ 发送失败: ${err.message}`);
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,6 +448,10 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -380,8 +480,24 @@ async function main() {
 
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
+  } else if (notifyMode) {
+    // 简洁通知行模式
+    console.log(result.notifyLine);
   } else {
     console.log(result.report);
+  }
+
+  // Webhook 模式：发送通知到外部服务
+  if (webhookMode) {
+    const targetUrl = webhookUrl || NOTIFY_DEFAULT_WEBHOOK_URL;
+    const payload = {
+      timestamp: new Date().toISOString(),
+      serverUrl: url,
+      summary: result.summary,
+      notifyLine: result.notifyLine,
+      alert: result.summary && !(result.summary.processesOnline && result.summary.exchangeOnline && result.summary.systemHealthy),
+    };
+    await postToWebhook(targetUrl, payload);
   }
 }
 
