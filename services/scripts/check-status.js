@@ -7,6 +7,10 @@
  *   node scripts/check-status.js --url http://localhost:3000
  *   node scripts/check-status.js --json              # JSON 格式输出
  *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --notify             # 仅输出简洁通知行（适合 IM/通知）
+ *   node scripts/check-status.js --webhook            # POST 到外部 Webhook 服务
+ *   node scripts/check-status.js --webhook-url=...    # 指定外部 Webhook URL
+ *   node scripts/check-status.js --notify --webhook   # 通知 + webhook 同时
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
@@ -24,6 +28,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const API_URL = process.env.API_URL || 'http://43.133.210.83:3000';
 const TIMEOUT = 10000; // 10s
 const STATE_FILE = join(__dirname, '..', '.check-state.json');
+const DEFAULT_WEBHOOK_URL = process.env.WEBHOOK_URL || '';
 
 // ======== 辅助函数 ========
 
@@ -344,6 +349,81 @@ function saveState(data) {
   }
 }
 
+// ======== 通知行生成 ========
+
+function generateNotifyLine(result) {
+  if (!result.success) {
+    return `❌ OKX Bot: 检查失败 — ${result.error}`;
+  }
+
+  const s = result.summary;
+  const d = result.data;
+  const ex = d.exchange;
+  const sys = d.system;
+
+  // 进程状态图标
+  const procIcon = s.processesOnline ? '🟢' : '🔴';
+
+  // 网络
+  const netLabel = ex.isTestnet ? '🧪' : '🔴';
+
+  // 信号增量
+  let sigPart = `信号:${s.totalSignals}`;
+  if (s.newSignals !== null && s.newSignals > 0) {
+    sigPart += ` [+${s.newSignals}]`;
+  }
+
+  // 持仓数
+  const posCount = (d.positions || []).length;
+  const posPart = posCount > 0 ? `持仓:${posCount}` : '空仓';
+
+  // 系统资源
+  const memPct = d.system?.memory?.usagePercent ?? '?';
+  const sysPart = `内存:${memPct}%`;
+
+  // 最新信号
+  let lastSig = '';
+  const recent = s.recentSignals || [];
+  if (recent.length > 0) {
+    const r = recent[0];
+    const sym = (r.symbol || '').replace('-USDT', '');
+    lastSig = ` | 最新:${r.type}@${sym}`;
+  }
+
+  return `${procIcon} ${netLabel} OKX Bot: ${ex.status === 'connected' ? '在线' : '断开'} | ${sigPart} | ${posPart} | ${sysPart}${lastSig}`;
+}
+
+// ======== Webhook 推送 ========
+
+async function postWebhook(result, webhookUrl) {
+  if (!webhookUrl) return;
+
+  const payload = {
+    timestamp: new Date().toISOString(),
+    server: result.data?.server,
+    exchange: result.data?.exchange,
+    summary: result.summary,
+    notify: generateNotifyLine(result),
+  };
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      console.error(`[Webhook] ⚠️ HTTP ${resp.status}: ${resp.statusText}`);
+    }
+  } catch (err) {
+    console.error(`[Webhook] ⚠️ 发送失败: ${err.message}`);
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,6 +432,10 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : (webhookMode ? DEFAULT_WEBHOOK_URL : '');
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -378,10 +462,18 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
+  // 通知行模式
+  if (notifyMode) {
+    console.log(generateNotifyLine(result));
+  } else if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(result.report);
+  }
+
+  // Webhook 推送
+  if (webhookUrl) {
+    await postWebhook(result, webhookUrl);
   }
 }
 
