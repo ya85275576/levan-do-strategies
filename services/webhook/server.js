@@ -364,14 +364,27 @@ app.get('/api/status', async (_req, res) => {
     }
   }
 
-  // 持仓列表：優先使用 Bot 狀態檔中的持倉資料
+  // 持倉列表：優先使用 Bot 狀態檔中的持倉資料（含盈虧）
   let positionsList = [];
+  let botEquity = null;
+  let botTotalPnl = null;
+  let botInitialCapital = null;
+  let botClosedTrades = [];
+  let botClosedTradesSummary = null;
   if (botStatus && botStatus.positions && botStatus.positions.length > 0) {
+    botEquity = botStatus.equity != null ? botStatus.equity : null;
+    botTotalPnl = botStatus.total_pnl != null ? botStatus.total_pnl : null;
+    botInitialCapital = botStatus.initial_capital != null ? botStatus.initial_capital : null;
+    botClosedTrades = botStatus.closed_trades || [];
+    botClosedTradesSummary = botStatus.closed_trades_summary || null;
     positionsList = botStatus.positions.map(p => ({
       symbol: p.symbol,
       side: p.side,
       size: p.size,
-      price: p.entry_price || null,
+      entry_price: p.entry_price != null ? p.entry_price : null,
+      current_price: p.current_price != null ? p.current_price : null,
+      pnl: p.pnl != null ? p.pnl : null,
+      pnl_pct: p.pnl_pct != null ? p.pnl_pct : null,
     }));
   } else {
     // 降級：使用 Webhook 本地的模擬持倉
@@ -382,7 +395,10 @@ app.get('/api/status', async (_req, res) => {
         symbol,
         side: size > 0 ? 'long' : 'short',
         size: Math.abs(size),
-        price: price || null,
+        entry_price: price || null,
+        current_price: price || null,
+        pnl: null,
+        pnl_pct: null,
       });
     }
   }
@@ -423,6 +439,13 @@ app.get('/api/status', async (_req, res) => {
       recent: recent50,
     },
     positions: positionsList,
+    closed_trades: botClosedTrades,
+    closed_trades_summary: botClosedTradesSummary || { count: 0, total_closed_pnl: 0 },
+    equity: {
+      initial_capital: botInitialCapital || BOT_INITIAL_CAPITAL,
+      total_pnl: botTotalPnl,
+      equity: botEquity,
+    },
     system: systemInfo,
     config: {
       baseTimeframe: '15m',
@@ -923,20 +946,122 @@ function renderSignals(d) {
 
 function renderPositions(d) {
   const positions = d.positions || [];
+  const eq = d.equity || {};
   let html = '<div class="card"><div class="card-title">💼 模拟持仓 <span style="font-weight:400;color:#484f58;font-size:12px">' + positions.length + ' 个</span></div>';
+
+  // 權益摘要列
+  const totalPnl = eq.total_pnl;
+  if (totalPnl != null) {
+    const initCap = eq.initial_capital || 0;
+    const equityVal = eq.equity || (initCap + totalPnl);
+    const pnlColor = totalPnl >= 0 ? '#3fb950' : '#f85149';
+    const pnlSign = totalPnl >= 0 ? '+' : '';
+    html += '<div style="display:flex;gap:24px;padding:10px 12px;margin-bottom:12px;background:#0d1117;border-radius:8px;border:1px solid #21262d">' +
+      '<div><span style="color:#8b949e;font-size:12px">初始資金</span><div style="font-size:20px;font-weight:700;color:#f0f6fc">$' + initCap.toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+      '<div><span style="color:#8b949e;font-size:12px">總權益</span><div style="font-size:20px;font-weight:700;color:#f0f6fc">$' + Number(equityVal).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+      '<div><span style="color:#8b949e;font-size:12px">總盈虧</span><div style="font-size:20px;font-weight:700;color:' + pnlColor + '">' + pnlSign + '$' + Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+    '</div>';
+  }
 
   if (positions.length === 0) {
     html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>交易对</th><th>方向</th><th>数量</th><th>入场价格</th></tr></thead><tbody>';
+    html += '<table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>入場價</th><th>現價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const p of positions) {
       const sideColor = p.side === 'long' ? '#3fb950' : '#f85149';
-      const sideLabel = p.side === 'long' ? '📈 多头' : '📉 空头';
+      const sideLabel = p.side === 'long' ? '📈 多頭' : '📉 空頭';
+
+      // 盈虧顏色
+      let pnlColor = '#8b949e';
+      let pnlSign = '';
+      let pnlStr = '—';
+      if (p.pnl != null) {
+        pnlColor = p.pnl > 0 ? '#3fb950' : (p.pnl < 0 ? '#f85149' : '#8b949e');
+        pnlSign = p.pnl > 0 ? '+' : '';
+        pnlStr = pnlSign + '$' + Math.abs(p.pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      }
+
+      let pnlPctStr = '—';
+      if (p.pnl_pct != null) {
+        const pctSign = p.pnl_pct > 0 ? '+' : '';
+        pnlPctStr = pctSign + p.pnl_pct.toFixed(2) + '%';
+      }
+
+      // 現價格式化
+      let priceStr = '—';
+      if (p.current_price != null && p.current_price > 0) {
+        priceStr = '$' + parseFloat(p.current_price).toFixed(p.current_price < 1 ? 6 : 2);
+      }
+
+      let entryStr = '—';
+      if (p.entry_price != null && p.entry_price > 0) {
+        entryStr = '$' + parseFloat(p.entry_price).toFixed(p.entry_price < 1 ? 6 : 2);
+      }
+
       html += '<tr>' +
         '<td><strong>' + esc(p.symbol) + '</strong></td>' +
         '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
         '<td>' + p.size + '</td>' +
-        '<td>' + (p.price ? '$' + p.price.toFixed(2) : '待更新') + '</td>' +
+        '<td style="font-size:12px">' + entryStr + '</td>' +
+        '<td style="font-size:12px">' + priceStr + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlPctStr + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderClosedTrades(d) {
+  const closed = d.closed_trades || [];
+  const summary = d.closed_trades_summary || { count: 0, total_closed_pnl: 0 };
+
+  const totalPnl = summary.total_closed_pnl || 0;
+  const tradeCount = summary.count || 0;
+  const pnlColor = totalPnl >= 0 ? '#3fb950' : '#f85149';
+  const pnlSign = totalPnl > 0 ? '+' : '';
+
+  let html = '<div class="card"><div class="card-title">📜 歷史平倉 <span style="font-weight:400;color:#484f58;font-size:12px">共 ' + tradeCount + ' 筆 · 總盈虧 <span style="color:' + pnlColor + ';font-weight:600">' + pnlSign + '$' + Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</span></span></div>';
+
+  if (closed.length === 0) {
+    html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暫無平倉記錄</div></div>';
+  } else {
+    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    for (const t of closed) {
+      const sideColor = t.side === 'long' ? '#3fb950' : '#f85149';
+      const sideLabel = t.side === 'long' ? '📈 多頭' : '📉 空頭';
+
+      let pnlColor = '#8b949e';
+      let pnlSign = '';
+      let pnlStr = '—';
+      if (t.pnl != null) {
+        pnlColor = t.pnl > 0 ? '#3fb950' : (t.pnl < 0 ? '#f85149' : '#8b949e');
+        pnlSign = t.pnl > 0 ? '+' : '';
+        pnlStr = pnlSign + '$' + Math.abs(t.pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      }
+
+      let pnlPctStr = '—';
+      if (t.pnl_pct != null) {
+        const pctSign = t.pnl_pct > 0 ? '+' : '';
+        pnlPctStr = pctSign + t.pnl_pct.toFixed(2) + '%';
+      }
+
+      const timeStr = t.close_time ? fmtTime(t.close_time) : '—';
+      const entryStr = t.entry_price ? '$' + parseFloat(t.entry_price).toFixed(t.entry_price < 1 ? 6 : 2) : '—';
+      const exitStr = t.exit_price ? '$' + parseFloat(t.exit_price).toFixed(t.exit_price < 1 ? 6 : 2) : '—';
+
+      html += '<tr>' +
+        '<td style="color:#8b949e;font-size:12px">' + esc(timeStr) + '</td>' +
+        '<td><strong>' + esc(t.symbol) + '</strong></td>' +
+        '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
+        '<td>' + t.size + '</td>' +
+        '<td style="font-size:12px">' + entryStr + '</td>' +
+        '<td style="font-size:12px">' + exitStr + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlPctStr + '</td>' +
       '</tr>';
     }
     html += '</tbody></table>';
@@ -978,6 +1103,7 @@ function renderDashboard(d) {
     renderSymbols(d) +
     renderSignals(d) +
     renderPositions(d) +
+    renderClosedTrades(d) +
     renderFooter();
 }
 

@@ -183,6 +183,8 @@ class SignalHandler:
             logger.info(f"[{self.symbol}] Trailing: 开多仓 {qty} @ {price:.2f}")
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "buy", qty, "market")
+            self._position_side = "long"
+            self._entry_price = price
 
         elif signal == SignalType.SHORT_ENTRY:
             pos = self.om.get_simulated_position_size(self.symbol)
@@ -193,6 +195,8 @@ class SignalHandler:
             logger.info(f"[{self.symbol}] Trailing: 开空仓 {qty} @ {price:.2f}")
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "sell", qty, "market")
+            self._position_side = "short"
+            self._entry_price = price
 
     async def _handle_atr(self, signal, action, side, price, tp_sl):
         if signal == SignalType.LONG_ENTRY:
@@ -253,16 +257,19 @@ class SignalHandler:
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "buy", qty, "market")
             self._position_side = "long"
+            self._entry_price = price
 
         elif signal == SignalType.SHORT_ENTRY:
             logger.info(f"[{self.symbol}] Options: 平多仓")
             await self.om.close_position(self.symbol)
             self._position_side = None
+            self._entry_price = 0.0
 
         elif signal == SignalType.LONG_EXIT:
             logger.info(f"[{self.symbol}] Options: 手动平多仓")
             await self.om.close_position(self.symbol)
             self._position_side = None
+            self._entry_price = 0.0
 
         elif signal == SignalType.SHORT_EXIT:
             logger.info(f"[{self.symbol}] Options: 手动平空仓")
@@ -347,11 +354,15 @@ class SymbolTradingUnit:
         # 信号处理器
         self.signal_handler = SignalHandler(order_manager, config, symbol)
 
+        # 最新價格（從 base candle 更新，供 PnL 計算）
+        self.latest_price: float = 0.0
+
         # 统计
         self.higher_tf_candle_count: int = 0
 
     def on_base_candle(self, candle: Candle):
         """基础周期 K 线更新"""
+        self.latest_price = candle.close
         completed = self.aggregator.add_candle(CandleData(
             timestamp=candle.timestamp,
             open=candle.open,
@@ -452,6 +463,10 @@ class OkxTradingBot:
         )
         self._flush_task: Optional[asyncio.Task] = None
         self._signal_queue: list = []
+
+        # 歷史平倉記錄（供 Webhook 儀表板讀取）
+        self.closed_trades: list = []
+        self._last_positions_snapshot: Dict[str, dict] = {}  # {symbol: {"qty": float, "entry_price": float}}
 
     # ---- 策略信号回调 ----
 
@@ -657,6 +672,71 @@ class OkxTradingBot:
         logger.info("╚════════════════════════════════════════════╝")
         logger.info("👋 机器人已停止")
 
+    def _detect_closed_trades(self):
+        """
+        比對當前持倉與上一次快照，檢測平倉並記錄到 closed_trades。
+        """
+        for sym, last_state in list(self._last_positions_snapshot.items()):
+            last_qty = last_state.get("qty", 0)
+            if last_qty == 0:
+                continue
+            curr_qty = self.order_manager.get_simulated_position_size(sym)
+
+            # 只處理數量減少的情況（部分或全部平倉）
+            if abs(curr_qty) >= abs(last_qty):
+                continue
+
+            closed_qty = abs(last_qty) - abs(curr_qty)
+            if closed_qty <= 0:
+                continue
+
+            side = "long" if last_qty > 0 else "short"
+            entry_price = last_state.get("entry_price", 0)
+
+            unit = self.trading_units.get(sym)
+            exit_price = unit.latest_price if unit and unit.latest_price > 0 else entry_price
+
+            pnl = 0.0
+            if entry_price and entry_price > 0 and exit_price > 0:
+                if side == "long":
+                    pnl = (exit_price - entry_price) * closed_qty
+                else:
+                    pnl = (entry_price - exit_price) * closed_qty
+
+            pnl_pct = 0.0
+            if entry_price and entry_price > 0 and closed_qty > 0:
+                pnl_pct = (pnl / (entry_price * closed_qty)) * 100
+
+            self.closed_trades.append({
+                "symbol": sym,
+                "side": side,
+                "entry_price": round(entry_price, 8) if entry_price else None,
+                "exit_price": round(exit_price, 8) if exit_price else None,
+                "size": round(closed_qty, 4),
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "close_time": datetime.now(timezone.utc).isoformat(),
+            })
+
+            logger.info(
+                f"📊 [平倉] {sym} {side} {closed_qty:.4f} @ "
+                f"{exit_price:.2f} → PnL={pnl:.2f} ({pnl_pct:+.2f}%)"
+            )
+
+        # 更新快照供下次比對
+        for sym, unit in self.trading_units.items():
+            qty = self.order_manager.get_simulated_position_size(sym)
+            sh = unit.signal_handler.get_summary()
+            entry = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
+            self._last_positions_snapshot[sym] = {
+                "qty": qty,
+                "entry_price": entry,
+            }
+
+        # 保留最近 100 筆
+        if len(self.closed_trades) > 100:
+            self.closed_trades = self.closed_trades[-100:]
+
     async def _flush_status_file(self):
         """
         定期將 Bot 狀態寫入 JSON 檔案，供 Webhook 儀表板讀取。
@@ -668,6 +748,9 @@ class OkxTradingBot:
                 if not self._running:
                     break
 
+                # 檢測已平倉交易
+                self._detect_closed_trades()
+
                 # 彙整各交易對狀態
                 symbols_state = {}
                 positions_list = []
@@ -677,7 +760,7 @@ class OkxTradingBot:
                     
                     # 從 Order Manager 取得實際持倉數量（不限於 SignalHandler 內部狀態）
                     pos_qty = self.order_manager.get_simulated_position_size(sym)
-                    entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                    entry_price = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
                     
                     symbols_state[sym] = {
                         "total_signals": sh["total_signals"],
@@ -690,18 +773,45 @@ class OkxTradingBot:
                         "aggregator_progress": round(unit.aggregator.progress_pct, 1),
                     }
 
-                    # 收集活躍持倉
+                    # 收集活躍持倉（含盈虧計算）
                     if pos_qty != 0:
+                        current_price = unit.latest_price if unit.latest_price > 0 else entry_price
+                        side = "long" if pos_qty > 0 else "short"
+
+                        # 計算浮盈
+                        pnl = 0.0
+                        if entry_price and entry_price > 0 and current_price > 0:
+                            if side == "long":
+                                pnl = (current_price - entry_price) * abs(pos_qty)
+                            else:
+                                pnl = (entry_price - current_price) * abs(pos_qty)
+
+                        # 盈虧百分比（相對入場價值）
+                        pnl_pct = 0.0
+                        if entry_price and entry_price > 0 and abs(pos_qty) > 0:
+                            pnl_pct = (pnl / (entry_price * abs(pos_qty))) * 100
+
                         positions_list.append({
                             "symbol": sym,
-                            "side": "long" if pos_qty > 0 else "short",
+                            "side": side,
                             "size": abs(pos_qty),
                             "entry_price": entry_price,
+                            "current_price": round(current_price, 8),
+                            "pnl": round(pnl, 2),
+                            "pnl_pct": round(pnl_pct, 2),
                         })
 
                 # 取出佇列中最近的訊號（最多 50 條）
                 recent_signals = self._signal_queue[-50:]
                 self._signal_queue.clear()
+
+                # 計算總權益與總盈虧
+                total_pnl = sum(p.get("pnl", 0) for p in positions_list)
+                equity = self.config.get("initial_capital", 10000.0) + total_pnl
+
+                # 歷史平倉統計
+                closed_count = len(self.closed_trades)
+                total_closed_pnl = sum(t.get("pnl", 0) or 0 for t in self.closed_trades)
 
                 status = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -711,6 +821,14 @@ class OkxTradingBot:
                     "symbol_count": len(self.trading_units),
                     "dry_run": self.config.get("dry_run", True),
                     "network": self.config.get("network", "testnet"),
+                    "initial_capital": self.config.get("initial_capital", 10000.0),
+                    "equity": round(equity, 2),
+                    "total_pnl": round(total_pnl, 2),
+                    "closed_trades_summary": {
+                        "count": closed_count,
+                        "total_closed_pnl": round(total_closed_pnl, 2),
+                    },
+                    "closed_trades": self.closed_trades[-20:],
                     "signal_queue": recent_signals,
                     "symbols": symbols_state,
                     "positions": positions_list,
@@ -727,6 +845,9 @@ class OkxTradingBot:
     async def _flush_status_file_now(self):
         """立即寫入一次狀態檔案（在 stop 時調用）"""
         try:
+            # 檢測已平倉交易
+            self._detect_closed_trades()
+
             symbols_state = {}
             positions_list = []
             for sym, unit in self.trading_units.items():
@@ -734,7 +855,7 @@ class OkxTradingBot:
                 st = unit.strategy.get_status()
                 
                 pos_qty = self.order_manager.get_simulated_position_size(sym)
-                entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                entry_price = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
                 
                 symbols_state[sym] = {
                     "total_signals": sh["total_signals"],
@@ -747,20 +868,52 @@ class OkxTradingBot:
                 }
 
                 if pos_qty != 0:
+                    current_price = unit.latest_price if unit.latest_price > 0 else entry_price
+                    side = "long" if pos_qty > 0 else "short"
+
+                    pnl = 0.0
+                    if entry_price and entry_price > 0 and current_price > 0:
+                        if side == "long":
+                            pnl = (current_price - entry_price) * abs(pos_qty)
+                        else:
+                            pnl = (entry_price - current_price) * abs(pos_qty)
+
+                    pnl_pct = 0.0
+                    if entry_price and entry_price > 0 and abs(pos_qty) > 0:
+                        pnl_pct = (pnl / (entry_price * abs(pos_qty))) * 100
+
                     positions_list.append({
                         "symbol": sym,
-                        "side": "long" if pos_qty > 0 else "short",
+                        "side": side,
                         "size": abs(pos_qty),
                         "entry_price": entry_price,
+                        "current_price": round(current_price, 8),
+                        "pnl": round(pnl, 2),
+                        "pnl_pct": round(pnl_pct, 2),
                     })
 
             recent = self._signal_queue[-50:]
+            total_pnl = sum(p.get("pnl", 0) for p in positions_list)
+            equity = self.config.get("initial_capital", 10000.0) + total_pnl
+
+            # 歷史平倉統計
+            closed_count = len(self.closed_trades)
+            total_closed_pnl = sum(t.get("pnl", 0) or 0 for t in self.closed_trades)
+
             status = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "running": False,
                 "uptime_seconds": int(time.time() - (self.start_time or time.time())),
                 "total_signals": self.total_signals,
                 "signal_queue": recent,
+                "initial_capital": self.config.get("initial_capital", 10000.0),
+                "equity": round(equity, 2),
+                "total_pnl": round(total_pnl, 2),
+                "closed_trades_summary": {
+                    "count": closed_count,
+                    "total_closed_pnl": round(total_closed_pnl, 2),
+                },
+                "closed_trades": self.closed_trades[-20:],
                 "symbols": symbols_state,
                 "positions": positions_list,
             }
