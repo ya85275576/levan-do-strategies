@@ -6,11 +6,25 @@
  *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
  *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --save-state        # 自动保存状态到文件（增量对比）
+ *   node scripts/check-status.js --notify            # 简洁通知行（适合 Telegram/Slack 等）
+ *   node scripts/check-status.js --webhook           # POST 结果到外部 Webhook
+ *   node scripts/check-status.js --webhook-url=https://hooks.example.com/hook
+ *   node scripts/check-status.js --save-state --notify --webhook  # 全量模式
+ *
+ * npm scripts：
+ *   npm run check          # node scripts/check-status.js --save-state
+ *   npm run check:notify   # node scripts/check-status.js --save-state --notify
+ *   npm run check:webhook  # node scripts/check-status.js --save-state --webhook
+ *   npm run check:full     # node scripts/check-status.js --save-state --notify --webhook
+ *
+ * 环境变量：
+ *   API_URL           # API 地址（默认 http://43.133.210.83:3000）
+ *   WEBHOOK_URL       # Webhook 目标 URL（默认与 API_URL 相同）
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
- *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state --notify
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -24,6 +38,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const API_URL = process.env.API_URL || 'http://43.133.210.83:3000';
 const TIMEOUT = 10000; // 10s
 const STATE_FILE = join(__dirname, '..', '.check-state.json');
+const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
 
 // ======== 辅助函数 ========
 
@@ -344,6 +359,182 @@ function saveState(data) {
   }
 }
 
+// ======== 简洁通知行 ========
+
+function buildNotifyLine(result) {
+  const s = result.summary;
+  const d = result.data;
+  if (!s || !d) return '';
+
+  const parts = [];
+
+  // 时间
+  const now = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit', minute: '2-digit',
+  });
+  parts.push(`[${now}]`);
+
+  // 进程健康
+  const procCount = d.processes ? d.processes.length : 0;
+  const procOk = d.processes ? d.processes.filter(p => p.status === 'online').length : 0;
+  const allOk = s.processesOnline && s.exchangeOnline;
+  parts.push(allOk ? '✅' : '⚠️');
+
+  // Bot 状态
+  if (s.exchangeOnline) {
+    parts.push('🤖');
+  } else {
+    parts.push('🔌❌');
+  }
+
+  // 信号
+  if (s.newSignals !== null) {
+    if (s.newSignals > 0) {
+      parts.push(`📈+${s.newSignals}`);
+    } else {
+      parts.push('📊—');
+    }
+  }
+  parts.push(`Σ${s.totalSignals}`);
+
+  // 最近信号摘要
+  if (s.recentSignals && s.recentSignals.length > 0) {
+    const latest = s.recentSignals[0];
+    parts.push(`📨${latest.type}@${latest.symbol}`);
+  }
+
+  // 系统资源
+  const sys = d.system;
+  if (sys) {
+    parts.push(`💾${sys.memory.usagePercent}%`);
+    parts.push(`💿${sys.disk.usagePercent}%`);
+  }
+
+  // 进程
+  parts.push(`⚙️${procOk}/${procCount}`);
+
+  // 持仓
+  const posCount = d.positions ? d.positions.length : 0;
+  if (posCount > 0) {
+    parts.push(`💼${posCount}`);
+  }
+
+  return parts.join(' ');
+}
+
+// ======== Webhook 发送 ========
+
+async function sendWebhook(result, webhookUrl) {
+  if (!webhookUrl) {
+    console.error('[Webhook] ⚠️ 未指定 Webhook URL');
+    return false;
+  }
+
+  const s = result.summary;
+  const d = result.data;
+  const notifyLine = buildNotifyLine(result);
+
+  // 构建新信号详情文本
+  let signalDetails = '';
+  if (s.newSignals !== null && s.newSignals > 0 && s.recentSignals && s.recentSignals.length > 0) {
+    signalDetails = s.recentSignals
+      .slice(0, 5)
+      .map(r => `${signalTypeLabel(r.type)} ${r.symbol}${r.price ? ` $${parseFloat(r.price).toFixed(2)}` : ''} — ${fmtTime(r.time)}`)
+      .join('\n');
+  }
+
+  // 构建持仓详情
+  let posDetails = '';
+  if (d.positions && d.positions.length > 0) {
+    posDetails = d.positions.map(p =>
+      `  ${p.side === 'long' ? '📈' : '📉'} ${p.symbol} ${p.size}${p.entry_price ? ` @ $${p.entry_price}` : ''}`
+    ).join('\n');
+  }
+
+  // 构建兼容多种平台（Slack/Discord/Telegram）的 payload
+  const payload = {
+    text: notifyLine,
+    username: 'LE VAN DO® 机器人监测',
+    attachments: [{
+      color: s.processesOnline && s.exchangeOnline && s.systemHealthy ? '#3fb950' : '#f85149',
+      fields: [
+        {
+          title: '🤖 进程状态',
+          value: d.processes && d.processes.length > 0
+            ? d.processes.map(p => `${p.status === 'online' ? '✅' : '❌'} ${p.name} (CPU:${p.cpu}% MEM:${fmtBytes(p.memory)})`).join('\n')
+            : '无 PM2 数据',
+          short: false,
+        },
+        {
+          title: '🔗 交易所',
+          value: `${d.exchange.name} · ${d.exchange.network}${d.exchange.isTestnet ? ' (测试网)' : ''} · ${d.exchange.status === 'connected' ? '✅ 已连接' : '❌ 断开'}`,
+          short: true,
+        },
+        {
+          title: '📡 累计信号',
+          value: `${s.totalSignals} 条${s.newSignals !== null && s.newSignals > 0 ? `（较上次 +${s.newSignals}）` : ''}`,
+          short: true,
+        },
+        {
+          title: '📊 信号分布',
+          value: `📗longE:${d.signals.counts.longE} 📕shortE:${d.signals.counts.shortE} 📘longX:${d.signals.counts.longX} 📙shortX:${d.signals.counts.shortX}`,
+          short: true,
+        },
+        {
+          title: '💼 持仓',
+          value: d.positions && d.positions.length > 0 ? `${d.positions.length} 个\n${posDetails}` : '无持仓',
+          short: true,
+        },
+        {
+          title: '🖥️ 系统资源',
+          value: d.system
+            ? `内存: ${d.system.memory.usagePercent}% · 磁盘: ${d.system.disk.usagePercent}% · CPU负载: ${d.system.cpu.loadAvg[0]}`
+            : 'N/A',
+          short: true,
+        },
+      ],
+      footer: `服务器: ${result.serverUrl}`,
+      ts: Math.floor(Date.now() / 1000),
+    }],
+  };
+
+  // 如果有新信号，添加单独的信号字段
+  if (signalDetails) {
+    payload.attachments.push({
+      color: '#58a6ff',
+      title: '📨 最近信号',
+      text: signalDetails,
+      ts: Math.floor(Date.now() / 1000),
+    });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (resp.ok) {
+      console.log(`[Webhook] ✅ 发送成功 → ${webhookUrl}`);
+      return true;
+    } else {
+      console.error(`[Webhook] ⚠️ 发送失败: HTTP ${resp.status} ${resp.statusText}`);
+      const body = await resp.text().catch(() => '');
+      if (body) console.error(`[Webhook] 响应: ${body.slice(0, 500)}`);
+      return false;
+    }
+  } catch (err) {
+    console.error(`[Webhook] ❌ 请求失败: ${err.message}`);
+    return false;
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,6 +543,12 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg
+    ? webhookUrlArg.split('=').slice(1).join('=')
+    : (process.env.WEBHOOK_URL || (webhookMode ? `${url}/webhook` : ''));
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -378,8 +575,16 @@ async function main() {
     });
   }
 
+  // Webhook 发送（在输出之前执行）
+  if (webhookMode && webhookUrl) {
+    await sendWebhook(result, webhookUrl);
+  }
+
+  // 输出模式
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
+  } else if (notifyMode) {
+    console.log(buildNotifyLine(result));
   } else {
     console.log(result.report);
   }
