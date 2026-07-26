@@ -13,7 +13,11 @@
     "start:mt5": "EXCHANGE_TYPE=mt5 node webhook/server.js",
     "start:mt5:testnet": "EXCHANGE_TYPE=mt5 EXCHANGE_NETWORK=testnet node webhook/server.js",
     "start:mt5:live": "EXCHANGE_TYPE=mt5 EXCHANGE_NETWORK=production node webhook/server.js",
-    "dev": "node --watch webhook/server.js"
+    "dev": "node --watch webhook/server.js",
+    "check-status": "node scripts/check-status.js",
+    "check-status:save": "node scripts/check-status.js --save-state",
+    "check-status:json": "node scripts/check-status.js --json",
+    "check-status:notify": "node scripts/check-status.js --save-state --notify"
   },
   "dependencies": {
     "express": "^4.21.0",

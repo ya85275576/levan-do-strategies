@@ -3,14 +3,18 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                          # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                   # JSON 格式输出
+ *   node scripts/check-status.js --save-state             # 自动保存状态到文件
+ *   node scripts/check-status.js --notify                 # 通知模式（简洁输出）
+ *   node scripts/check-status.js --save-state --notify    # 保存状态 + 通知
+ *   node scripts/check-status.js --webhook=https://...    # POST 通知到 Webhook
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
  *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   带通知:      cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state --notify
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -352,6 +356,9 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookArg = args.find(a => a.startsWith('--webhook='));
+  const webhookUrl = webhookArg ? webhookArg.split('=')[1] : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -367,21 +374,78 @@ async function main() {
     process.exit(1);
   }
 
+  const summary = result.summary;
+  const newSignals = summary.newSignals;
+
   // 保存当前状态
-  if (saveStateFlag && result.summary) {
+  if (saveStateFlag && summary) {
     saveState({
       lastCheck: new Date().toISOString(),
-      totalSignals: result.summary.totalSignals,
-      processesOnline: result.summary.processesOnline,
-      exchangeOnline: result.summary.exchangeOnline,
-      systemHealthy: result.summary.systemHealthy,
+      totalSignals: summary.totalSignals,
+      processesOnline: summary.processesOnline,
+      exchangeOnline: summary.exchangeOnline,
+      systemHealthy: summary.systemHealthy,
     });
   }
 
+  // ---- 通知模式：输出简洁通知行 ----
+  if (notifyMode) {
+    const hasNew = newSignals !== null && newSignals > 0;
+    const procIcon = summary.processesOnline ? '✅' : '❌';
+    const exchIcon = summary.exchangeOnline ? '✅' : '❌';
+    const sysIcon = summary.systemHealthy ? '✅' : '⚠️';
+
+    if (hasNew) {
+      // 有新信号 — 详细通知
+      const recent = summary.recentSignals || [];
+      const recentStr = recent.slice(0, 3).map(r => `${r.type}/${r.symbol}`).join(' ');
+      console.log(`[NOTIFY] 🔔 新信号 +${newSignals} 条 | 总计 ${summary.totalSignals} 条 | 最近: ${recentStr} | 进程 ${procIcon} 交易所 ${exchIcon} 系统 ${sysIcon}`);
+    } else {
+      console.log(`[NOTIFY] 📭 无新信号 | 总计 ${summary.totalSignals} 条 | 进程 ${procIcon} 交易所 ${exchIcon} 系统 ${sysIcon}`);
+    }
+  }
+
+  // ---- Webhook 通知 ----
+  if (webhookUrl && summary) {
+    const payload = {
+      timestamp: summary.timestamp,
+      server: url,
+      newSignals: newSignals,
+      totalSignals: summary.totalSignals,
+      processesOnline: summary.processesOnline,
+      exchangeOnline: summary.exchangeOnline,
+      systemHealthy: summary.systemHealthy,
+      recentSignals: (summary.recentSignals || []).slice(0, 5),
+    };
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!resp.ok) {
+        console.error(`[Webhook] ⚠️ 发送失败: HTTP ${resp.status}`);
+      }
+    } catch (err) {
+      console.error(`[Webhook] ⚠️ 发送失败: ${err.message}`);
+    }
+  }
+
+  // ---- 输出 ----
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
+  } else if (!notifyMode) {
+    // 通知模式下已经输出过通知行；如果同时需要完整报告，加上 --verbose
+    if (args.includes('--verbose')) {
+      console.log(result.report);
+    }
   } else {
-    console.log(result.report);
+    // notify 模式：只输出通知行 + 分隔线（便于日志阅读）
+    console.log('─'.repeat(50));
   }
 }
 
