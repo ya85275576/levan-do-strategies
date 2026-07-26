@@ -6,11 +6,14 @@
  *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
  *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --save-state        # 自动保存状态到文件（增量对比）
+ *   node scripts/check-status.js --notify            # 简洁通知行（适合推送）
+ *   node scripts/check-status.js --webhook <url>     # POST 结果到外部服务
+ *   node scripts/check-status.js --save-state --notify  # 组合使用
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
- *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state --notify
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -66,24 +69,39 @@ function colorByPct(pct) {
   return '🟢';
 }
 
+const SIGNAL_LABELS = {
+  longE:   '📗 多头开仓',
+  shortE:  '📕 空头开仓',
+  longX:   '📘 多头平仓',
+  shortX:  '📙 空头平仓',
+  longTP1: '🔵 多头止盈',
+  shortTP1:'🟣 空头止盈',
+  longSL:  '⛔ 多头止损',
+  shortSL: '⛔ 空头止损',
+};
+
 function signalTypeLabel(type) {
-  const labels = {
-    longE:  '📗 多头开仓',
-    shortE: '📕 空头开仓',
-    longX:  '📘 多头平仓',
-    shortX: '📙 空头平仓',
-  };
-  return labels[type] || type;
+  return SIGNAL_LABELS[type] || type;
 }
 
+const SIGNAL_COLORS = {
+  longE:   '\x1b[32m',
+  shortE:  '\x1b[31m',
+  longX:   '\x1b[34m',
+  shortX:  '\x1b[33m',
+  longTP1: '\x1b[35m',
+  shortTP1:'\x1b[36m',
+  longSL:  '\x1b[91m',
+  shortSL: '\x1b[93m',
+};
+
 function signalTypeColor(type) {
-  const colors = {
-    longE:  '\x1b[32m', // green
-    shortE: '\x1b[31m', // red
-    longX:  '\x1b[34m', // blue
-    shortX: '\x1b[33m', // yellow
-  };
-  return colors[type] || '\x1b[37m';
+  return SIGNAL_COLORS[type] || '\x1b[37m';
+}
+
+/** 信号是否为主要交易信号（开/平仓，不含 TP/SL） */
+function isTradeSignal(type) {
+  return ['longE', 'shortE', 'longX', 'shortX'].includes(type);
 }
 
 const RESET = '\x1b[0m';
@@ -182,6 +200,14 @@ export async function checkStatus(options = {}) {
   const counts = sig.counts || { longE: 0, shortE: 0, longX: 0, shortX: 0 };
   const total = sig.total || 0;
 
+  // 计算 TP/SL 信号数量（从 recent 中统计）
+  const recent = sig.recent || [];
+  const tpSlCounts = { longTP1: 0, shortTP1: 0, longSL: 0, shortSL: 0 };
+  for (const r of recent) {
+    if (tpSlCounts.hasOwnProperty(r.type)) tpSlCounts[r.type]++;
+  }
+  // 使用最近信号中出现的类型作为近似，也可以从 API 中获取更精确的数据
+
   // 与上次对比
   if (prevTotal !== undefined && prevTotal !== null) {
     const diff = total - prevTotal;
@@ -195,28 +221,35 @@ export async function checkStatus(options = {}) {
   } else {
     lines.push(`  📊 累计信号: ${BOLD}${total}${RESET} 条`);
   }
+
+  // 交易信号（开/平仓）
+  lines.push(`  ${BOLD}交易信号:${RESET}`);
   lines.push(`    📗 longE  (多头开仓):  ${String(counts.longE || 0).padStart(4)}`);
   lines.push(`    📕 shortE (空头开仓):  ${String(counts.shortE || 0).padStart(4)}`);
   lines.push(`    📘 longX  (多头平仓):  ${String(counts.longX || 0).padStart(4)}`);
   lines.push(`    📙 shortX (空头平仓):  ${String(counts.shortX || 0).padStart(4)}`);
+  lines.push(`  ${BOLD}止盈/止损:${RESET}`);
+  lines.push(`    🔵 longTP1 (多头止盈):  ${String(counts.longTP1 || tpSlCounts.longTP1 || 0).padStart(4)}`);
+  lines.push(`    🟣 shortTP1(空头止盈):  ${String(counts.shortTP1 || tpSlCounts.shortTP1 || 0).padStart(4)}`);
+  lines.push(`    ⛔ longSL  (多头止损):  ${String(counts.longSL || tpSlCounts.longSL || 0).padStart(4)}`);
+  lines.push(`    ⛔ shortSL (空头止损):  ${String(counts.shortSL || tpSlCounts.shortSL || 0).padStart(4)}`);
 
   // 最近信号
-  const recent = sig.recent || [];
   if (recent.length > 0) {
     lines.push('');
     lines.push(`  ${BOLD}最近信号 (最新 ${Math.min(recent.length, 10)} 条):${RESET}`);
-    lines.push(`  ${GRAY}  ${'时间'.padEnd(19)} ${'类型'.padEnd(14)} ${'交易对'.padEnd(12)} 价格${RESET}`);
-    lines.push(`  ${GRAY}  ${'─'.repeat(18)} ${'─'.repeat(12)} ${'─'.repeat(10)} ${'─'.repeat(10)}${RESET}`);
+    lines.push(`  ${GRAY}  ${'时间'.padEnd(19)} ${'类型'.padEnd(10)} ${'交易对'.padEnd(14)} 价格${RESET}`);
+    lines.push(`  ${GRAY}  ${'─'.repeat(18)} ${'─'.repeat(8)} ${'─'.repeat(12)} ${'─'.repeat(10)}${RESET}`);
 
     const showCount = Math.min(recent.length, 10);
     for (let i = 0; i < showCount; i++) {
       const r = recent[i];
       const t = fmtTime(r.time);
-      const st = r.type.padEnd(10);
-      const sym = r.symbol.padEnd(10);
+      const label = signalTypeLabel(r.type);
+      const sym = r.symbol.padEnd(14);
       const price = r.price ? `$${parseFloat(r.price).toFixed(2)}` : '—';
       const color = signalTypeColor(r.type);
-      lines.push(`  ${t} ${color}${r.type}${RESET}  ${sym} ${price}`);
+      lines.push(`  ${t} ${color}${label}${RESET}  ${sym} ${price}`);
     }
   } else {
     lines.push(`   → ${GRAY}暂无信号记录${RESET}`);
@@ -320,6 +353,13 @@ export async function checkStatus(options = {}) {
       exchangeOnline: exchangeHealthy,
       systemHealthy: allHealthy,
       recentSignals: recent.slice(0, 10),
+      signalCounts: counts,
+      tpSlCounts: {
+        longTP1: counts.longTP1 || tpSlCounts.longTP1 || 0,
+        shortTP1: counts.shortTP1 || tpSlCounts.shortTP1 || 0,
+        longSL: counts.longSL || tpSlCounts.longSL || 0,
+        shortSL: counts.shortSL || tpSlCounts.shortSL || 0,
+      },
     },
     serverUrl: url,
   };
@@ -344,6 +384,66 @@ function saveState(data) {
   }
 }
 
+/** 生成简洁通知行 */
+function buildNotifyLine(result) {
+  const s = result.summary;
+  if (!s) return '❌ 状态检查失败';
+
+  const parts = [];
+  // 信号状态
+  if (s.newSignals !== null) {
+    if (s.newSignals > 0) {
+      parts.push(`📊 +${s.newSignals} 新信号 (共${s.totalSignals})`);
+      // 列出最近的主要交易信号
+      const tradeSignals = (s.recentSignals || []).filter(r => isTradeSignal(r.type));
+      if (tradeSignals.length > 0) {
+        const last = tradeSignals[0];
+        const label = SIGNAL_LABELS[last.type] || last.type;
+        parts.push(`${label} ${last.symbol}`);
+      }
+    } else {
+      parts.push('📊 无新信号');
+    }
+  } else {
+    parts.push(`📊 共${s.totalSignals}信号`);
+  }
+
+  // 进程状态
+  parts.push(s.processesOnline ? '✅ 进程正常' : '⚠️ 进程异常');
+
+  // 系统健康
+  parts.push(s.systemHealthy ? '🟢 系统健康' : '🔴 系统告警');
+
+  return `[Bot状态] ${parts.join(' | ')}`;
+}
+
+/** POST 结果到外部 Webhook */
+async function postToWebhook(webhookUrl, result) {
+  const payload = {
+    source: 'le-van-do-bot-check',
+    timestamp: new Date().toISOString(),
+    success: result.success,
+    summary: result.summary,
+    // 只包含最近的信号
+    recentSignals: result.summary?.recentSignals?.slice(0, 5) || [],
+  };
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return { ok: resp.ok, status: resp.status };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,6 +452,11 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookIndex = args.indexOf('--webhook');
+  const webhookUrl = webhookIndex >= 0 && webhookIndex + 1 < args.length
+    ? args[webhookIndex + 1]
+    : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -376,6 +481,22 @@ async function main() {
       exchangeOnline: result.summary.exchangeOnline,
       systemHealthy: result.summary.systemHealthy,
     });
+  }
+
+  // 简洁通知模式
+  if (notifyMode) {
+    console.log(buildNotifyLine(result));
+    return;
+  }
+
+  // POST 到外部 Webhook
+  if (webhookUrl) {
+    const whResult = await postToWebhook(webhookUrl, result);
+    if (whResult.ok) {
+      console.log(`[Webhook] ✅ 已发送到 ${webhookUrl} (HTTP ${whResult.status})`);
+    } else {
+      console.error(`[Webhook] ❌ 发送失败: ${whResult.error || whResult.status}`);
+    }
   }
 
   if (jsonMode) {
