@@ -223,6 +223,25 @@ function readBotStatus() {
   }
 }
 
+const BOT_CLOSED_TRADES_FILE = '/tmp/le-van-do-bot-closed.json';
+
+/**
+ * 从持久化文件读取完整历史平仓记录
+ */
+function readClosedTrades() {
+  try {
+    if (!existsSync(BOT_CLOSED_TRADES_FILE)) {
+      return [];
+    }
+    const raw = readFileSync(BOT_CLOSED_TRADES_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取历史平仓文件失败: ${err.message}`);
+    return [];
+  }
+}
+
 // ======== 启动前配置检查 ========
 
 const cfgCheck = validateConfig();
@@ -375,8 +394,14 @@ app.get('/api/status', async (_req, res) => {
     botEquity = botStatus.equity != null ? botStatus.equity : null;
     botTotalPnl = botStatus.total_pnl != null ? botStatus.total_pnl : null;
     botInitialCapital = botStatus.initial_capital != null ? botStatus.initial_capital : null;
-    botClosedTrades = botStatus.closed_trades || [];
-    botClosedTradesSummary = botStatus.closed_trades_summary || null;
+    botClosedTrades = readClosedTrades();
+    {
+      const ctCount = botClosedTrades.length;
+      const ctPnl = botClosedTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+      botClosedTradesSummary = botClosedTradesSummary || { count: ctCount, total_closed_pnl: ctPnl };
+      botClosedTradesSummary.count = ctCount;
+      botClosedTradesSummary.total_closed_pnl = ctPnl;
+    }
     positionsList = botStatus.positions.map(p => ({
       symbol: p.symbol,
       side: p.side,

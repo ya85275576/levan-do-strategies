@@ -609,11 +609,16 @@ class OkxTradingBot:
             "BOT_STATUS_FILE",
             "/tmp/le-van-do-bot-status.json",
         )
+        self._closed_trades_file = os.environ.get(
+            "BOT_CLOSED_TRADES_FILE",
+            "/tmp/le-van-do-bot-closed.json",
+        )
         self._flush_task: Optional[asyncio.Task] = None
         self._signal_queue: list = []
 
-        # 歷史平倉記錄（供 Webhook 儀表板讀取）
+        # 歷史平倉記錄（供 Webhook 儀表板讀取，持久化存檔）
         self.closed_trades: list = []
+        self._load_closed_trades()
         self._last_positions_snapshot: Dict[str, dict] = {}  # {symbol: {"qty": float, "entry_price": float}}
 
     # ---- 策略信号回调 ----
@@ -637,6 +642,39 @@ class OkxTradingBot:
             "signal": signal.value,
             "price": round(tp_sl.entry, 2) if tp_sl.entry else None,
         })
+
+    # ---- 歷史平倉持久化 ----
+
+    def _load_closed_trades(self):
+        """從持久化檔案載入歷史平倉記錄"""
+        try:
+            if os.path.exists(self._closed_trades_file):
+                with open(self._closed_trades_file, "r") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.closed_trades = data
+                    logger.info(f"📂 載入歷史平倉記錄: {len(self.closed_trades)} 筆")
+                else:
+                    logger.warning(f"⚠️ 歷史平倉檔案格式錯誤，重新開始")
+                    self.closed_trades = []
+            else:
+                self.closed_trades = []
+        except Exception as e:
+            logger.warning(f"⚠️ 讀取歷史平倉檔案失敗: {e}")
+            self.closed_trades = []
+
+    def _save_closed_trades(self):
+        """將歷史平倉記錄持久化到檔案"""
+        try:
+            # 保留最近 500 筆
+            if len(self.closed_trades) > 500:
+                self.closed_trades = self.closed_trades[-500:]
+            tmp = self._closed_trades_file + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.closed_trades, f, ensure_ascii=False)
+            os.replace(tmp, self._closed_trades_file)
+        except Exception as e:
+            logger.error(f"寫入歷史平倉檔案失敗: {e}")
 
     # ---- 市场数据回调 ----
 
@@ -893,6 +931,9 @@ class OkxTradingBot:
         # 保留最近 200 筆
         if len(self.closed_trades) > 200:
             self.closed_trades = self.closed_trades[-200:]
+
+        # 持久化存檔
+        self._save_closed_trades()
 
     async def _flush_status_file(self):
         """
