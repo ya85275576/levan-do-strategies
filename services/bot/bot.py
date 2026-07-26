@@ -218,6 +218,147 @@ class SignalHandler:
             self._entry_price = price
             self._tp_entry_qty = qty
 
+        elif signal in (SignalType.LONG_TP1, SignalType.SHORT_TP1):
+            qty_pct = self._tp1_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Trailing: TP1 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP1 盈虧計算
+            self._tp_status[0] = "hit"
+            self._tp_hit_level = 1
+            tp_price = self._tp_prices[0] if self._tp_prices[0] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[0] = round(pnl_val, 2)
+            # 記錄 TP1 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 1,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+
+        elif signal in (SignalType.LONG_TP2, SignalType.SHORT_TP2):
+            qty_pct = self._tp2_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Trailing: TP2 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP2 盈虧計算
+            self._tp_status[1] = "hit"
+            self._tp_hit_level = 2
+            tp_price = self._tp_prices[1] if self._tp_prices[1] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[1] = round(pnl_val, 2)
+            # 記錄 TP2 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 2,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+
+        elif signal in (SignalType.LONG_TP3, SignalType.SHORT_TP3):
+            qty_pct = self._tp3_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Trailing: TP3 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP3 盈虧計算
+            self._tp_status[2] = "hit"
+            self._tp_hit_level = 3
+            tp_price = self._tp_prices[2] if self._tp_prices[2] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[2] = round(pnl_val, 2)
+            # 記錄 TP3 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 3,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+            # TP3 為最後一批，全部平倉完畢
+            self._position_side = None
+
+        elif signal in (SignalType.LONG_SL, SignalType.SHORT_SL):
+            logger.warning(f"[{self.symbol}] Trailing: SL 触发")
+            await self.om.close_position(self.symbol)
+            # 標記未觸發的 TP 批為 missed
+            for i in range(self._tp_hit_level, 3):
+                if self._tp_status[i] == "pending":
+                    self._tp_status[i] = "missed"
+            # 記錄 SL 平倉交易（剩餘全部數量）
+            remaining_pct = 100.0 - sum([self._tp1_pct, self._tp2_pct, self._tp3_pct][:self._tp_hit_level])
+            if remaining_pct <= 0:
+                remaining_pct = 100.0
+            remaining_qty = self._tp_entry_qty * (remaining_pct / 100.0)
+            if remaining_qty <= 0:
+                remaining_qty = abs(self.om.get_simulated_position_size(self.symbol))
+            sl_pnl = 0.0
+            if self._entry_price > 0 and price > 0 and remaining_qty > 0:
+                if self._position_side == "long":
+                    sl_pnl = (price - self._entry_price) * remaining_qty
+                else:
+                    sl_pnl = (self._entry_price - price) * remaining_qty
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(price, 8) if price else None,
+                "size": round(remaining_qty, 4),
+                "pnl": round(sl_pnl, 2),
+                "pnl_pct": round((sl_pnl / (self._entry_price * remaining_qty)) * 100, 2) if self._entry_price > 0 and remaining_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 0,
+                "tp_target": None,
+            })
+            self._position_side = None
+
     async def _handle_atr(self, signal, action, side, price, tp_sl):
         if signal == SignalType.LONG_ENTRY:
             if self._position_side == "short":
@@ -347,6 +488,8 @@ class SignalHandler:
                 "tp_order": 3,
                 "tp_target": round(tp_price, 8) if tp_price else None,
             })
+            # TP3 為最後一批，全部平倉完畢
+            self._position_side = None
 
         elif signal in (SignalType.LONG_SL, SignalType.SHORT_SL):
             logger.warning(f"[{self.symbol}] ATR: SL 触发")
@@ -407,6 +550,147 @@ class SignalHandler:
         elif signal == SignalType.SHORT_EXIT:
             logger.info(f"[{self.symbol}] Options: 手动平空仓")
             await self.om.close_position(self.symbol)
+            self._position_side = None
+
+        elif signal in (SignalType.LONG_TP1, SignalType.SHORT_TP1):
+            qty_pct = self._tp1_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Options: TP1 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP1 盈虧計算
+            self._tp_status[0] = "hit"
+            self._tp_hit_level = 1
+            tp_price = self._tp_prices[0] if self._tp_prices[0] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[0] = round(pnl_val, 2)
+            # 記錄 TP1 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 1,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+
+        elif signal in (SignalType.LONG_TP2, SignalType.SHORT_TP2):
+            qty_pct = self._tp2_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Options: TP2 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP2 盈虧計算
+            self._tp_status[1] = "hit"
+            self._tp_hit_level = 2
+            tp_price = self._tp_prices[1] if self._tp_prices[1] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[1] = round(pnl_val, 2)
+            # 記錄 TP2 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 2,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+
+        elif signal in (SignalType.LONG_TP3, SignalType.SHORT_TP3):
+            qty_pct = self._tp3_pct
+            pos = self.om.get_simulated_position_size(self.symbol)
+            qty = abs(pos) * (qty_pct / 100.0)
+            close_side = "sell" if self._position_side == "long" else "buy"
+            logger.info(f"[{self.symbol}] Options: TP3 {qty_pct}%")
+            await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP3 盈虧計算
+            self._tp_status[2] = "hit"
+            self._tp_hit_level = 3
+            tp_price = self._tp_prices[2] if self._tp_prices[2] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[2] = round(pnl_val, 2)
+            # 記錄 TP3 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 3,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
+            # TP3 為最後一批，全部平倉完畢
+            self._position_side = None
+
+        elif signal in (SignalType.LONG_SL, SignalType.SHORT_SL):
+            logger.warning(f"[{self.symbol}] Options: SL 触发")
+            await self.om.close_position(self.symbol)
+            # 標記未觸發的 TP 批為 missed
+            for i in range(self._tp_hit_level, 3):
+                if self._tp_status[i] == "pending":
+                    self._tp_status[i] = "missed"
+            # 記錄 SL 平倉交易（剩餘全部數量）
+            remaining_pct = 100.0 - sum([self._tp1_pct, self._tp2_pct, self._tp3_pct][:self._tp_hit_level])
+            if remaining_pct <= 0:
+                remaining_pct = 100.0
+            remaining_qty = self._tp_entry_qty * (remaining_pct / 100.0)
+            if remaining_qty <= 0:
+                remaining_qty = abs(self.om.get_simulated_position_size(self.symbol))
+            sl_pnl = 0.0
+            if self._entry_price > 0 and price > 0 and remaining_qty > 0:
+                if self._position_side == "long":
+                    sl_pnl = (price - self._entry_price) * remaining_qty
+                else:
+                    sl_pnl = (self._entry_price - price) * remaining_qty
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(price, 8) if price else None,
+                "size": round(remaining_qty, 4),
+                "pnl": round(sl_pnl, 2),
+                "pnl_pct": round((sl_pnl / (self._entry_price * remaining_qty)) * 100, 2) if self._entry_price > 0 and remaining_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 0,
+                "tp_target": None,
+            })
             self._position_side = None
 
     def reset(self):
