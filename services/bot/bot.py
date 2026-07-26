@@ -670,18 +670,34 @@ class OkxTradingBot:
 
                 # 彙整各交易對狀態
                 symbols_state = {}
+                positions_list = []
                 for sym, unit in self.trading_units.items():
                     sh = unit.signal_handler.get_summary()
                     st = unit.strategy.get_status()
+                    
+                    # 從 Order Manager 取得實際持倉數量（不限於 SignalHandler 內部狀態）
+                    pos_qty = self.order_manager.get_simulated_position_size(sym)
+                    entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                    
                     symbols_state[sym] = {
                         "total_signals": sh["total_signals"],
                         "last_signal": sh["last_signal"],
                         "position_side": sh["position_side"],
-                        "entry_price": sh["entry_price"],
+                        "position_qty": pos_qty,
+                        "entry_price": entry_price,
                         "condition": st.get("condition", 0),
                         "higher_tf_candles": unit.higher_tf_candle_count,
                         "aggregator_progress": round(unit.aggregator.progress_pct, 1),
                     }
+
+                    # 收集活躍持倉
+                    if pos_qty != 0:
+                        positions_list.append({
+                            "symbol": sym,
+                            "side": "long" if pos_qty > 0 else "short",
+                            "size": abs(pos_qty),
+                            "entry_price": entry_price,
+                        })
 
                 # 取出佇列中最近的訊號（最多 50 條）
                 recent_signals = self._signal_queue[-50:]
@@ -697,6 +713,7 @@ class OkxTradingBot:
                     "network": self.config.get("network", "testnet"),
                     "signal_queue": recent_signals,
                     "symbols": symbols_state,
+                    "positions": positions_list,
                 }
 
                 tmp = self._status_file + ".tmp"
@@ -711,17 +728,31 @@ class OkxTradingBot:
         """立即寫入一次狀態檔案（在 stop 時調用）"""
         try:
             symbols_state = {}
+            positions_list = []
             for sym, unit in self.trading_units.items():
                 sh = unit.signal_handler.get_summary()
                 st = unit.strategy.get_status()
+                
+                pos_qty = self.order_manager.get_simulated_position_size(sym)
+                entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                
                 symbols_state[sym] = {
                     "total_signals": sh["total_signals"],
                     "last_signal": sh["last_signal"],
                     "position_side": sh["position_side"],
-                    "entry_price": sh["entry_price"],
+                    "position_qty": pos_qty,
+                    "entry_price": entry_price,
                     "condition": st.get("condition", 0),
                     "higher_tf_candles": unit.higher_tf_candle_count,
                 }
+
+                if pos_qty != 0:
+                    positions_list.append({
+                        "symbol": sym,
+                        "side": "long" if pos_qty > 0 else "short",
+                        "size": abs(pos_qty),
+                        "entry_price": entry_price,
+                    })
 
             recent = self._signal_queue[-50:]
             status = {
@@ -731,6 +762,7 @@ class OkxTradingBot:
                 "total_signals": self.total_signals,
                 "signal_queue": recent,
                 "symbols": symbols_state,
+                "positions": positions_list,
             }
 
             with open(self._status_file, "w") as f:

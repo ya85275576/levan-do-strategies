@@ -316,19 +316,75 @@ app.get('/api/status', async (_req, res) => {
         }
       }
     }
+
+    // ======== 从 Bot 状态文件同步信号数据 ========
+    // 使用 Bot 的 total_signals 覆盖仪表板的信号总数
+    signalsTotal = botTotalSignals;
+
+    // 从每个交易对的 last_signal 推算信号分类计数
+    const botCounts = { longE: 0, shortE: 0, longX: 0, shortX: 0 };
+    if (botStatus.symbols) {
+      for (const [sym, info] of Object.entries(botStatus.symbols)) {
+        const sig = info.last_signal;
+        if (!sig) continue;
+        if (sig === 'longE') botCounts.longE++;
+        else if (sig === 'shortE') botCounts.shortE++;
+        else if (sig.startsWith('long')) botCounts.longX++;
+        else if (sig.startsWith('short')) botCounts.shortX++;
+      }
+    }
+    // 合并：以 Bot 计数为准（覆盖 Webhook 本地计数）
+    signalCounts.longE = botCounts.longE;
+    signalCounts.shortE = botCounts.shortE;
+    signalCounts.longX = botCounts.longX;
+    signalCounts.shortX = botCounts.shortX;
+
+    // 从 signal_queue 更新 recent 信号列表
+    if (botStatus.signal_queue && botStatus.signal_queue.length > 0) {
+      for (const entry of botStatus.signal_queue) {
+        const sym = entry.symbol || '';
+        const sig = entry.signal || '';
+        // 忽略已经存在的相同信号（避免重复）
+        const exists = recentSignals.some(
+          r => r.time === entry.time && r.symbol === sym && r.type === sig
+        );
+        if (!exists) {
+          recentSignals.push({
+            time: entry.time,
+            type: sig,
+            symbol: sym,
+            price: entry.price != null ? String(entry.price) : null,
+          });
+        }
+      }
+      // 保留最新的 MAX_SIGNALS 条
+      if (recentSignals.length > MAX_SIGNALS) {
+        recentSignals.splice(0, recentSignals.length - MAX_SIGNALS);
+      }
+    }
   }
 
-  // 持仓列表
-  const positionsList = [];
-  for (const [symbol, size] of Object.entries(positions)) {
-    if (size === 0) continue;
-    const price = symbolPrices[symbol];
-    positionsList.push({
-      symbol,
-      side: size > 0 ? 'long' : 'short',
-      size: Math.abs(size),
-      price: price || null,
-    });
+  // 持仓列表：優先使用 Bot 狀態檔中的持倉資料
+  let positionsList = [];
+  if (botStatus && botStatus.positions && botStatus.positions.length > 0) {
+    positionsList = botStatus.positions.map(p => ({
+      symbol: p.symbol,
+      side: p.side,
+      size: p.size,
+      price: p.entry_price || null,
+    }));
+  } else {
+    // 降級：使用 Webhook 本地的模擬持倉
+    for (const [symbol, size] of Object.entries(positions)) {
+      if (size === 0) continue;
+      const price = symbolPrices[symbol];
+      positionsList.push({
+        symbol,
+        side: size > 0 ? 'long' : 'short',
+        size: Math.abs(size),
+        price: price || null,
+      });
+    }
   }
 
   // 最近信号（最近的 50 条）
