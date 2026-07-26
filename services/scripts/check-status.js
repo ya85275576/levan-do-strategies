@@ -3,14 +3,20 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                           # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                    # JSON 格式输出
+ *   node scripts/check-status.js --save-state              # 自动保存状态到文件（增量对比）
+ *   node scripts/check-status.js --notify                  # 简洁通知行（适合通知栏/Telegram）
+ *   node scripts/check-status.js --webhook                 # 输出 JSON payload 到 stdout（可管道转发）
+ *   node scripts/check-status.js --webhook-url=https://... # POST 到自定义 Webhook（Slack/Discord/Telegram 兼容）
+ *   node scripts/check-status.js --notify --save-state     # 通知 + 状态保存
+ *   node scripts/check-status.js --webhook --save-state    # 全量检查 + Webhook
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
  *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟发送通知: cd /path/to/services && /usr/bin/node scripts/check-status.js --notify --save-state
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -76,6 +82,16 @@ function signalTypeLabel(type) {
   return labels[type] || type;
 }
 
+function signalTypeShort(type) {
+  const labels = {
+    longE:  'L↑',
+    shortE: 'S↓',
+    longX:  'L↓',
+    shortX: 'S↑',
+  };
+  return labels[type] || type;
+}
+
 function signalTypeColor(type) {
   const colors = {
     longE:  '\x1b[32m', // green
@@ -90,6 +106,125 @@ const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const CYAN = '\x1b[36m';
 const GRAY = '\x1b[90m';
+
+// ======== Notify 辅助函数 ========
+
+/**
+ * 生成单行简洁通知字符串（不含颜色转义码，适合 Telegram/Slack/通知栏）
+ */
+export function buildNotifyLine(result) {
+  if (!result.success) {
+    return `❌ OKX Bot 检查失败: ${result.error}`;
+  }
+
+  const s = result.summary;
+  const parts = [];
+
+  // 状态表情
+  const allOk = s.processesOnline && s.exchangeOnline && s.systemHealthy;
+  parts.push(allOk ? '✅' : '⚠️');
+
+  // 机器人总信号
+  parts.push(`信号:${s.totalSignals}`);
+
+  // 新信号增量
+  if (s.newSignals !== null && s.newSignals !== undefined) {
+    if (s.newSignals > 0) {
+      parts.push(`🆕+${s.newSignals}`);
+    } else {
+      parts.push(`🟢无新`);
+    }
+  }
+
+  // 进程状态
+  parts.push(s.processesOnline ? '进程✅' : '进程❌');
+  parts.push(s.exchangeOnline ? '交易✅' : '交易❌');
+  parts.push(s.systemHealthy ? '系统✅' : '系统⚠️');
+
+  // 最新信号（若有新增）
+  if (s.recentSignals && s.recentSignals.length > 0 && s.newSignals > 0) {
+    const latest = s.recentSignals[0];
+    const st = signalTypeShort(latest.type);
+    parts.push(`${st} ${latest.symbol}${latest.price ? ' $'+latest.price : ''}`);
+  }
+
+  return `[OKX Bot] ${parts.join(' · ')}`;
+}
+
+/**
+ * 生成 Webhook Payload（兼容 Slack/Discord/Telegram）
+ */
+export function buildWebhookPayload(result) {
+  if (!result.success) {
+    return {
+      text: `❌ OKX Bot 检查失败: ${result.error}`,
+      attachments: [{
+        color: 'danger',
+        title: '❌ 检查失败',
+        text: result.error,
+        ts: Math.floor(Date.now() / 1000),
+      }],
+    };
+  }
+
+  const s = result.summary;
+  const allOk = s.processesOnline && s.exchangeOnline && s.systemHealthy;
+
+  const fields = [
+    { title: '信号总数', value: String(s.totalSignals), short: true },
+    { title: '新增信号', value: s.newSignals > 0 ? `+${s.newSignals}` : '无', short: true },
+    { title: '进程状态', value: s.processesOnline ? '✅ 正常' : '❌ 异常', short: true },
+    { title: '交易所', value: s.exchangeOnline ? '✅ 已连接' : '❌ 断开', short: true },
+    { title: '系统健康', value: s.systemHealthy ? '✅ 正常' : '⚠️ 需关注', short: true },
+  ];
+
+  // 添加最近信号
+  if (s.recentSignals && s.recentSignals.length > 0 && s.newSignals > 0) {
+    const latest = s.recentSignals.slice(0, 5);
+    const sigList = latest.map(r =>
+      `${signalTypeShort(r.type)} ${r.symbol}${r.price ? ' $'+r.price : ''}`
+    ).join('\n');
+    fields.push({ title: '最新信号', value: sigList, short: false });
+  }
+
+  const color = allOk ? 'good' : (s.systemHealthy ? 'warning' : 'danger');
+  const title = allOk
+    ? '✅ OKX Bot 运行正常'
+    : '⚠️ OKX Bot 需要关注';
+
+  return {
+    text: `${title} | 信号 ${s.totalSignals}${s.newSignals > 0 ? ` (+${s.newSignals})` : ''}`,
+    attachments: [{
+      color,
+      title,
+      fields,
+      ts: Math.floor(Date.now() / 1000),
+    }],
+  };
+}
+
+// ======== Webhook POST ========
+
+async function postWebhook(payload, webhookUrl) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!response.ok) {
+      console.error(`[Webhook] ⚠️ HTTP ${response.status}: ${response.statusText}`);
+    } else {
+      console.log(`[Webhook] ✅ 已推送至 ${webhookUrl}`);
+    }
+  } catch (err) {
+    console.error(`[Webhook] ❌ 推送失败: ${err.message}`);
+  }
+}
 
 // ======== 主检查逻辑 ========
 
@@ -352,6 +487,12 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg
+    ? webhookUrlArg.split('=')[1]
+    : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -363,7 +504,20 @@ async function main() {
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
-    console.error(`\n❌ ${result.error}\n`);
+    if (notifyMode) {
+      console.log(buildNotifyLine(result));
+    } else if (webhookMode) {
+      const payload = buildWebhookPayload(result);
+      if (webhookUrl) {
+        await postWebhook(payload, webhookUrl);
+      } else {
+        console.log(JSON.stringify(payload, null, 2));
+      }
+    } else if (jsonMode) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.error(`\n❌ ${result.error}\n`);
+    }
     process.exit(1);
   }
 
@@ -378,7 +532,19 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
+  if (notifyMode) {
+    // 简洁通知行
+    console.log(buildNotifyLine(result));
+  } else if (webhookMode) {
+    const payload = buildWebhookPayload(result);
+    if (webhookUrl) {
+      // 推送到外部 Webhook（Slack/Discord/Telegram）
+      await postWebhook(payload, webhookUrl);
+    } else {
+      // 无 URL 时输出 JSON payload 到 stdout（用于管道/调试）
+      console.log(JSON.stringify(payload, null, 2));
+    }
+  } else if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(result.report);
