@@ -386,6 +386,12 @@ app.get('/api/status', async (_req, res) => {
       pnl: p.pnl != null ? p.pnl : null,
       pnl_pct: p.pnl_pct != null ? p.pnl_pct : null,
       leverage: p.leverage != null ? p.leverage : null,
+      margin: p.margin != null ? p.margin : null,
+      tp_prices: p.tp_prices || [null, null, null],
+      tp_status: p.tp_status || ["pending", "pending", "pending"],
+      tp_pnl: p.tp_pnl || [0, 0, 0],
+      tp_hit_level: p.tp_hit_level != null ? p.tp_hit_level : 0,
+      tp_margins: p.tp_margins || [null, null, null],
     }));
   } else {
     // 降級：使用 Webhook 本地的模擬持倉
@@ -967,7 +973,7 @@ function renderPositions(d) {
   if (positions.length === 0) {
     html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>槓桿</th><th>入場價</th><th>現價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    html += '<div style="overflow-x:auto"><table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>槓桿</th><th>保證金</th><th>入場價</th><th>現價</th><th>TP1</th><th>TP2</th><th>TP3</th><th>分批盈虧</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const p of positions) {
       const sideColor = p.side === 'long' ? '#3fb950' : '#f85149';
       const sideLabel = p.side === 'long' ? '📈 多頭' : '📉 空頭';
@@ -988,7 +994,7 @@ function renderPositions(d) {
         pnlPctStr = pctSign + p.pnl_pct.toFixed(2) + '%';
       }
 
-      // 現價格式化
+      // 價格格式化
       let priceStr = '—';
       if (p.current_price != null && p.current_price > 0) {
         priceStr = '$' + parseFloat(p.current_price).toFixed(p.current_price < 1 ? 6 : 2);
@@ -1005,18 +1011,68 @@ function renderPositions(d) {
         leverageStr = p.leverage + 'x';
       }
 
+      // 保證金顯示
+      let marginStr = '—';
+      if (p.margin != null) {
+        marginStr = '$' + Number(p.margin).toFixed(2);
+      }
+
+      // TP 顯示輔助函數
+      function tpCell(price, status) {
+        if (price == null || price <= 0) return '<span style="color:#484f58">—</span>';
+        let color = '#8b949e';
+        let icon = '';
+        if (status === 'hit') { color = '#3fb950'; icon = ' ✓'; }
+        else if (status === 'missed') { color = '#f85149'; icon = ' ✗'; }
+        const pStr = Number(price).toFixed(price < 1 ? 6 : 2);
+        return '<span style="color:' + color + ';font-size:11px;white-space:nowrap">$' + pStr + icon + '</span>';
+      }
+
+      // TP 價格
+      const tpPrices = p.tp_prices || [null, null, null];
+      const tpStatus = p.tp_status || ['pending', 'pending', 'pending'];
+      const tpHitLevel = p.tp_hit_level || 0;
+
+      const tp1html = tpCell(tpPrices[0], tpStatus[0]);
+      const tp2html = tpCell(tpPrices[1], tpStatus[1]);
+      const tp3html = tpCell(tpPrices[2], tpStatus[2]);
+
+      // 分批盈虧顯示
+      const tpPnl = p.tp_pnl || [0, 0, 0];
+      const tpMargins = p.tp_margins || [null, null, null];
+      function batchPnlStr(idx) {
+        const st = tpStatus[idx];
+        if (st === 'hit') {
+          const pnlVal = tpPnl[idx] || 0;
+          const c = pnlVal >= 0 ? '#3fb950' : '#f85149';
+          const s = pnlVal >= 0 ? '+' : '';
+          return '<span style="color:' + c + ';font-weight:600">' + s + '$' + Math.abs(pnlVal).toFixed(2) + '</span>';
+        } else if (st === 'missed') {
+          return '<span style="color:#f85149">SL</span>';
+        }
+        return '<span style="color:#484f58">—</span>';
+      }
+      let batchPnlHtml = '<span style="font-size:11px">' +
+        'TP1:' + batchPnlStr(0) + ' | TP2:' + batchPnlStr(1) + ' | TP3:' + batchPnlStr(2) +
+      '</span>';
+
       html += '<tr>' +
         '<td><strong>' + esc(p.symbol) + '</strong></td>' +
         '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
         '<td>' + p.size + '</td>' +
         '<td>' + leverageStr + '</td>' +
+        '<td style="font-size:12px">' + marginStr + '</td>' +
         '<td style="font-size:12px">' + entryStr + '</td>' +
         '<td style="font-size:12px">' + priceStr + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlPctStr + '</td>' +
+        '<td style="font-size:12px;text-align:center">' + tp1html + '</td>' +
+        '<td style="font-size:12px;text-align:center">' + tp2html + '</td>' +
+        '<td style="font-size:12px;text-align:center">' + tp3html + '</td>' +
+        '<td style="font-size:11px">' + batchPnlHtml + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600;font-size:13px">' + pnlStr + '</td>' +
+        '<td style="color:' + pnlColor + ';font-weight:600;font-size:13px">' + pnlPctStr + '</td>' +
       '</tr>';
     }
-    html += '</tbody></table>';
+    html += '</tbody></table></div>';
   }
 
   html += '</div>';
@@ -1037,7 +1093,7 @@ function renderClosedTrades(d) {
   if (closed.length === 0) {
     html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暫無平倉記錄</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>批次</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const t of closed) {
       const sideColor = t.side === 'long' ? '#3fb950' : '#f85149';
       const sideLabel = t.side === 'long' ? '📈 多頭' : '📉 空頭';
@@ -1061,6 +1117,13 @@ function renderClosedTrades(d) {
       const entryStr = t.entry_price ? '$' + parseFloat(t.entry_price).toFixed(t.entry_price < 1 ? 6 : 2) : '—';
       const exitStr = t.exit_price ? '$' + parseFloat(t.exit_price).toFixed(t.exit_price < 1 ? 6 : 2) : '—';
 
+      // 批次顯示
+      let tpOrderStr = '—';
+      if (t.tp_order === 1) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP1 ✓</span>';
+      else if (t.tp_order === 2) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP2 ✓</span>';
+      else if (t.tp_order === 3) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP3 ✓</span>';
+      else if (t.tp_order === 0) tpOrderStr = '<span style="color:#f85149;font-weight:600">SL/手動</span>';
+
       html += '<tr>' +
         '<td style="color:#8b949e;font-size:12px">' + esc(timeStr) + '</td>' +
         '<td><strong>' + esc(t.symbol) + '</strong></td>' +
@@ -1068,6 +1131,7 @@ function renderClosedTrades(d) {
         '<td>' + t.size + '</td>' +
         '<td style="font-size:12px">' + entryStr + '</td>' +
         '<td style="font-size:12px">' + exitStr + '</td>' +
+        '<td style="font-size:12px;text-align:center">' + tpOrderStr + '</td>' +
         '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
         '<td style="color:' + pnlColor + ';font-weight:600">' + pnlPctStr + '</td>' +
       '</tr>';

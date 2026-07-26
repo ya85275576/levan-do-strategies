@@ -123,6 +123,16 @@ class SignalHandler:
         self._tp3_pct = config.get("tp3_qty_pct", 20.0)
         self._tp_hit_level: int = 0
 
+        # 分批止盈追踪（TP1/TP2/TP3 目標價格、狀態、盈虧）
+        self._tp_prices: list = [0.0, 0.0, 0.0]        # 入場時快照的 TP 目標價格
+        self._tp_entry_qty: float = 0.0                 # 入場總數量（用於分批盈虧計算）
+        self._tp_status: list = ["pending", "pending", "pending"]  # pending / hit / missed
+        self._tp_pnl: list = [0.0, 0.0, 0.0]            # 各批已實現盈虧
+        self._leverage: int = config.get("default_leverage", 1)
+
+        # 最近平倉交易記錄（由 TP/SL 處理器寫入，供狀態檔收集）
+        self._recent_trades: list = []
+
         # 统计
         self.total_signals: int = 0
         self.last_signal: Optional[SignalType] = None
@@ -155,6 +165,14 @@ class SignalHandler:
         self.total_signals += 1
         self.last_signal = signal
 
+        # 入場信號時快照 TP 目標價格
+        if signal in (SignalType.LONG_ENTRY, SignalType.SHORT_ENTRY):
+            self._tp_prices = [tp_sl.tp1, tp_sl.tp2, tp_sl.tp3]
+            self._tp_entry_qty = 0.0  # will be set in _handle_* methods
+            self._tp_status = ["pending", "pending", "pending"]
+            self._tp_pnl = [0.0, 0.0, 0.0]
+            self._tp_hit_level = 0
+
         action, side = SIGNAL_ACTION_MAP.get(signal, ("none", "none"))
         if action == "none":
             logger.warning(f"[{self.symbol}] 未识别的信号: {signal}")
@@ -185,6 +203,7 @@ class SignalHandler:
             await self.om.place_order(self.symbol, "buy", qty, "market")
             self._position_side = "long"
             self._entry_price = price
+            self._tp_entry_qty = qty
 
         elif signal == SignalType.SHORT_ENTRY:
             pos = self.om.get_simulated_position_size(self.symbol)
@@ -197,6 +216,7 @@ class SignalHandler:
             await self.om.place_order(self.symbol, "sell", qty, "market")
             self._position_side = "short"
             self._entry_price = price
+            self._tp_entry_qty = qty
 
     async def _handle_atr(self, signal, action, side, price, tp_sl):
         if signal == SignalType.LONG_ENTRY:
@@ -209,6 +229,7 @@ class SignalHandler:
             await self.om.place_order(self.symbol, "buy", qty, "market")
             self._position_side = "long"
             self._entry_price = price
+            self._tp_entry_qty = qty
 
         elif signal == SignalType.SHORT_ENTRY:
             if self._position_side == "long":
@@ -220,6 +241,7 @@ class SignalHandler:
             await self.om.place_order(self.symbol, "sell", qty, "market")
             self._position_side = "short"
             self._entry_price = price
+            self._tp_entry_qty = qty
 
         elif signal in (SignalType.LONG_TP1, SignalType.SHORT_TP1):
             qty_pct = self._tp1_pct
@@ -228,6 +250,33 @@ class SignalHandler:
             close_side = "sell" if self._position_side == "long" else "buy"
             logger.info(f"[{self.symbol}] ATR: TP1 {qty_pct}%")
             await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP1 盈虧計算
+            self._tp_status[0] = "hit"
+            self._tp_hit_level = 1
+            tp_price = self._tp_prices[0] if self._tp_prices[0] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[0] = round(pnl_val, 2)
+            # 記錄 TP1 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 1,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
 
         elif signal in (SignalType.LONG_TP2, SignalType.SHORT_TP2):
             qty_pct = self._tp2_pct
@@ -236,6 +285,33 @@ class SignalHandler:
             close_side = "sell" if self._position_side == "long" else "buy"
             logger.info(f"[{self.symbol}] ATR: TP2 {qty_pct}%")
             await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP2 盈虧計算
+            self._tp_status[1] = "hit"
+            self._tp_hit_level = 2
+            tp_price = self._tp_prices[1] if self._tp_prices[1] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[1] = round(pnl_val, 2)
+            # 記錄 TP2 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 2,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
 
         elif signal in (SignalType.LONG_TP3, SignalType.SHORT_TP3):
             qty_pct = self._tp3_pct
@@ -244,10 +320,66 @@ class SignalHandler:
             close_side = "sell" if self._position_side == "long" else "buy"
             logger.info(f"[{self.symbol}] ATR: TP3 {qty_pct}%")
             await self.om.place_order(self.symbol, close_side, round(qty, 4), "market")
+            # TP3 盈虧計算
+            self._tp_status[2] = "hit"
+            self._tp_hit_level = 3
+            tp_price = self._tp_prices[2] if self._tp_prices[2] > 0 else price
+            batch_qty = self._tp_entry_qty * (qty_pct / 100.0)
+            if batch_qty == 0:
+                batch_qty = qty
+            pnl_val = 0.0
+            if self._entry_price > 0 and tp_price > 0 and batch_qty > 0:
+                if self._position_side == "long":
+                    pnl_val = (tp_price - self._entry_price) * batch_qty
+                else:
+                    pnl_val = (self._entry_price - tp_price) * batch_qty
+            self._tp_pnl[2] = round(pnl_val, 2)
+            # 記錄 TP3 平倉交易
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(tp_price, 8) if tp_price else None,
+                "size": round(batch_qty, 4),
+                "pnl": round(pnl_val, 2),
+                "pnl_pct": round((pnl_val / (self._entry_price * batch_qty)) * 100, 2) if self._entry_price > 0 and batch_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 3,
+                "tp_target": round(tp_price, 8) if tp_price else None,
+            })
 
         elif signal in (SignalType.LONG_SL, SignalType.SHORT_SL):
             logger.warning(f"[{self.symbol}] ATR: SL 触发")
             await self.om.close_position(self.symbol)
+            # 標記未觸發的 TP 批為 missed
+            for i in range(self._tp_hit_level, 3):
+                if self._tp_status[i] == "pending":
+                    self._tp_status[i] = "missed"
+            # 記錄 SL 平倉交易（剩餘全部數量）
+            remaining_pct = 100.0 - sum([self._tp1_pct, self._tp2_pct, self._tp3_pct][:self._tp_hit_level])
+            if remaining_pct <= 0:
+                remaining_pct = 100.0
+            remaining_qty = self._tp_entry_qty * (remaining_pct / 100.0)
+            if remaining_qty <= 0:
+                remaining_qty = abs(self.om.get_simulated_position_size(self.symbol))
+            sl_pnl = 0.0
+            if self._entry_price > 0 and price > 0 and remaining_qty > 0:
+                if self._position_side == "long":
+                    sl_pnl = (price - self._entry_price) * remaining_qty
+                else:
+                    sl_pnl = (self._entry_price - price) * remaining_qty
+            self._recent_trades.append({
+                "symbol": self.symbol,
+                "side": self._position_side,
+                "entry_price": round(self._entry_price, 8) if self._entry_price else None,
+                "exit_price": round(price, 8) if price else None,
+                "size": round(remaining_qty, 4),
+                "pnl": round(sl_pnl, 2),
+                "pnl_pct": round((sl_pnl / (self._entry_price * remaining_qty)) * 100, 2) if self._entry_price > 0 and remaining_qty > 0 else 0.0,
+                "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 0,
+                "tp_target": None,
+            })
             self._position_side = None
 
     async def _handle_options(self, signal, action, side, price, tp_sl):
@@ -258,6 +390,7 @@ class SignalHandler:
             await self.om.place_order(self.symbol, "buy", qty, "market")
             self._position_side = "long"
             self._entry_price = price
+            self._tp_entry_qty = qty
 
         elif signal == SignalType.SHORT_ENTRY:
             logger.info(f"[{self.symbol}] Options: 平多仓")
@@ -282,16 +415,31 @@ class SignalHandler:
         self._position_qty = 0.0
         self._entry_price = 0.0
         self._tp_hit_level = 0
+        self._tp_prices = [0.0, 0.0, 0.0]
+        self._tp_entry_qty = 0.0
+        self._tp_status = ["pending", "pending", "pending"]
+        self._tp_pnl = [0.0, 0.0, 0.0]
+        self._recent_trades = []
 
     def get_summary(self) -> dict:
         """获取信号处理器状态摘要"""
-        return {
+        s = {
             "symbol": self.symbol,
             "position_side": self._position_side,
             "entry_price": round(self._entry_price, 2) if self._entry_price else None,
             "total_signals": self.total_signals,
             "last_signal": self.last_signal.value if self.last_signal else None,
+            "tp_prices": [round(p, 2) if p else None for p in self._tp_prices],
+            "tp_status": self._tp_status,
+            "tp_pnl": [round(p, 2) for p in self._tp_pnl],
+            "tp_hit_level": self._tp_hit_level,
+            "tp_entry_qty": self._tp_entry_qty,
+            "leverage": self._leverage,
+            "recent_trades": list(self._recent_trades),
         }
+        # 取出後清空，避免重複收集
+        self._recent_trades.clear()
+        return s
 
 
 # ================================================================
@@ -672,11 +820,18 @@ class OkxTradingBot:
         logger.info("╚════════════════════════════════════════════╝")
         logger.info("👋 机器人已停止")
 
-    def _detect_closed_trades(self):
+    def _detect_closed_trades(self, skip_symbols: set = None):
         """
         比對當前持倉與上一次快照，檢測平倉並記錄到 closed_trades。
+
+        :param skip_symbols: 跳過這些交易對（已透過 recent_trades 記錄）
         """
+        if skip_symbols is None:
+            skip_symbols = set()
+
         for sym, last_state in list(self._last_positions_snapshot.items()):
+            if sym in skip_symbols:
+                continue
             last_qty = last_state.get("qty", 0)
             if last_qty == 0:
                 continue
@@ -716,6 +871,8 @@ class OkxTradingBot:
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl_pct, 2),
                 "close_time": datetime.now(timezone.utc).isoformat(),
+                "tp_order": 0,
+                "tp_target": None,
             })
 
             logger.info(
@@ -733,9 +890,9 @@ class OkxTradingBot:
                 "entry_price": entry,
             }
 
-        # 保留最近 100 筆
-        if len(self.closed_trades) > 100:
-            self.closed_trades = self.closed_trades[-100:]
+        # 保留最近 200 筆
+        if len(self.closed_trades) > 200:
+            self.closed_trades = self.closed_trades[-200:]
 
     async def _flush_status_file(self):
         """
@@ -748,8 +905,16 @@ class OkxTradingBot:
                 if not self._running:
                     break
 
-                # 檢測已平倉交易
-                self._detect_closed_trades()
+                # 收集各 SignalHandler 最近產生的平倉交易記錄（TP 準確盈虧）
+                trade_symbols = set()
+                for sym, unit in self.trading_units.items():
+                    sh_summary = unit.signal_handler.get_summary()
+                    for trade in sh_summary.get("recent_trades", []):
+                        self.closed_trades.append(trade)
+                        trade_symbols.add(sym)
+
+                # 檢測已平倉交易（跳過已由 recent_trades 記錄的交易對）
+                self._detect_closed_trades(skip_symbols=trade_symbols)
 
                 # 彙整各交易對狀態
                 symbols_state = {}
@@ -791,6 +956,23 @@ class OkxTradingBot:
                         if entry_price and entry_price > 0 and abs(pos_qty) > 0:
                             pnl_pct = (pnl / (entry_price * abs(pos_qty))) * 100
 
+                        # 保證金 = 倉位價值 / 槓桿
+                        leverage_val = sh.get("leverage", self.config.get("default_leverage", 1)) or 1
+                        position_value = entry_price * abs(pos_qty)
+                        margin_val = position_value / leverage_val if leverage_val > 0 else 0
+
+                        # TP 分批資料
+                        tp_prices = sh.get("tp_prices", [None, None, None])
+                        tp_status = sh.get("tp_status", ["pending", "pending", "pending"])
+                        tp_pnl = sh.get("tp_pnl", [0.0, 0.0, 0.0])
+                        tp_hit_level = sh.get("tp_hit_level", 0)
+
+                        # 各 TP 批的保證金
+                        tp_pcts = [self.config.get("tp1_qty_pct", 50), self.config.get("tp2_qty_pct", 30), self.config.get("tp3_qty_pct", 20)]
+                        tp_margins = []
+                        for pct in tp_pcts:
+                            tp_margins.append(round(margin_val * pct / 100.0, 2))
+
                         positions_list.append({
                             "symbol": sym,
                             "side": side,
@@ -799,6 +981,13 @@ class OkxTradingBot:
                             "current_price": round(current_price, 8),
                             "pnl": round(pnl, 2),
                             "pnl_pct": round(pnl_pct, 2),
+                            "leverage": leverage_val,
+                            "margin": round(margin_val, 2),
+                            "tp_prices": tp_prices,
+                            "tp_status": tp_status,
+                            "tp_pnl": tp_pnl,
+                            "tp_hit_level": tp_hit_level,
+                            "tp_margins": tp_margins,
                         })
 
                 # 取出佇列中最近的訊號（最多 50 條）
@@ -845,8 +1034,16 @@ class OkxTradingBot:
     async def _flush_status_file_now(self):
         """立即寫入一次狀態檔案（在 stop 時調用）"""
         try:
-            # 檢測已平倉交易
-            self._detect_closed_trades()
+            # 收集各 SignalHandler 最近產生的平倉交易記錄
+            trade_symbols = set()
+            for sym, unit in self.trading_units.items():
+                sh_summary = unit.signal_handler.get_summary()
+                for trade in sh_summary.get("recent_trades", []):
+                    self.closed_trades.append(trade)
+                    trade_symbols.add(sym)
+
+            # 檢測已平倉交易（跳過已記錄的交易對）
+            self._detect_closed_trades(skip_symbols=trade_symbols)
 
             symbols_state = {}
             positions_list = []
@@ -882,6 +1079,22 @@ class OkxTradingBot:
                     if entry_price and entry_price > 0 and abs(pos_qty) > 0:
                         pnl_pct = (pnl / (entry_price * abs(pos_qty))) * 100
 
+                    # 保證金 = 倉位價值 / 槓桿
+                    leverage_val = sh.get("leverage", self.config.get("default_leverage", 1)) or 1
+                    position_value = entry_price * abs(pos_qty)
+                    margin_val = position_value / leverage_val if leverage_val > 0 else 0
+
+                    # TP 分批資料
+                    tp_prices = sh.get("tp_prices", [None, None, None])
+                    tp_status = sh.get("tp_status", ["pending", "pending", "pending"])
+                    tp_pnl = sh.get("tp_pnl", [0.0, 0.0, 0.0])
+                    tp_hit_level = sh.get("tp_hit_level", 0)
+
+                    tp_pcts = [self.config.get("tp1_qty_pct", 50), self.config.get("tp2_qty_pct", 30), self.config.get("tp3_qty_pct", 20)]
+                    tp_margins = []
+                    for pct in tp_pcts:
+                        tp_margins.append(round(margin_val * pct / 100.0, 2))
+
                     positions_list.append({
                         "symbol": sym,
                         "side": side,
@@ -890,7 +1103,13 @@ class OkxTradingBot:
                         "current_price": round(current_price, 8),
                         "pnl": round(pnl, 2),
                         "pnl_pct": round(pnl_pct, 2),
-                        "leverage": self.config.get("default_leverage", 1),
+                        "leverage": leverage_val,
+                        "margin": round(margin_val, 2),
+                        "tp_prices": tp_prices,
+                        "tp_status": tp_status,
+                        "tp_pnl": tp_pnl,
+                        "tp_hit_level": tp_hit_level,
+                        "tp_margins": tp_margins,
                     })
 
             recent = self._signal_queue[-50:]
