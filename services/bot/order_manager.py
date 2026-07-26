@@ -43,6 +43,7 @@ class OkxOrderManager:
         symbol: str = "BTC-USDT",
         leverage: int = 1,
         position_mode: str = "isolated",
+        simulated_trading: bool = False,
     ):
         """
         :param api_key: OKX API Key
@@ -53,6 +54,7 @@ class OkxOrderManager:
         :param symbol: 默认交易对
         :param leverage: 默认杠杆
         :param position_mode: 仓位模式 (isolated/cross)
+        :param simulated_trading: 是否添加 x-simulated-trading 标头（OKX 模擬盤需要）
         """
         self.api_key = api_key
         self.api_secret = api_secret
@@ -62,6 +64,7 @@ class OkxOrderManager:
         self.default_symbol = symbol
         self.default_leverage = leverage
         self.position_mode = position_mode
+        self.simulated_trading = simulated_trading
 
         # 会话
         self._session: Optional[aiohttp.ClientSession] = None
@@ -75,6 +78,9 @@ class OkxOrderManager:
         # 风控
         self._last_order_time: float = 0
         self._min_order_interval: float = 1.0  # 1 秒
+
+        # 最高槓桿快取 {symbol: max_leverage}
+        self._max_leverage_cache: Dict[str, int] = {}
 
         if self.dry_run:
             logger.info("🧪 模拟模式已启用 — 所有操作仅输出日志，不实际连接交易所")
@@ -137,6 +143,10 @@ class OkxOrderManager:
             "Content-Type": "application/json",
         }
 
+        # 模擬盤需要 x-simulated-trading 標頭
+        if self.simulated_trading:
+            headers["x-simulated-trading"] = "1"
+
         try:
             async with session.request(method, url, headers=headers,
                                        data=body_str if body else None) as resp:
@@ -181,12 +191,64 @@ class OkxOrderManager:
             logger.error(f"获取 USDT 余额失败: {e}")
             return 0.0
 
+    async def _public_request(self, request_path: str) -> dict:
+        """發送公開 API 請求（無需認證）"""
+        if self.dry_run:
+            return {"code": "0", "msg": "模拟模式", "data": [{}]}
+
+        session = self._get_session()
+        url = f"{self.rest_url}{request_path}"
+
+        try:
+            async with session.request("GET", url) as resp:
+                data = await resp.json()
+                if data.get("code") != "0":
+                    logger.warning(f"公開 API 錯誤: code={data.get('code')}, msg={data.get('msg')}")
+                return data
+        except aiohttp.ClientError as e:
+            logger.error(f"公開 API 請求失敗: {e}")
+            return {"code": "-1", "msg": str(e), "data": []}
+
+    async def get_max_leverage(self, symbol: str) -> int:
+        """
+        查詢交易對的最高可用槓桿（帶快取）
+        通過 /api/v5/public/instruments 公開 API
+        """
+        # 先查快取
+        if symbol in self._max_leverage_cache:
+            return self._max_leverage_cache[symbol]
+
+        try:
+            res = await self._public_request(
+                f"/api/v5/public/instruments?instType=SWAP&instId={symbol}"
+            )
+            data = res.get("data", [])
+            if data:
+                # lever 字段是該幣種最高槓桿（如 "125"）
+                max_lev = int(data[0].get("lever", "0"))
+                if max_lev > 0:
+                    self._max_leverage_cache[symbol] = max_lev
+                    logger.info(f"📊 {symbol} 最高槓桿: {max_lev}x")
+                    return max_lev
+        except Exception as e:
+            logger.warning(f"查詢 {symbol} 最高槓桿失敗: {e}")
+
+        # 預設值
+        logger.info(f"📊 {symbol} 無法查詢最高槓桿，使用預設 {self.default_leverage}x")
+        return self.default_leverage
+
     async def set_leverage(self, symbol: str = None, leverage: int = None,
-                           mode: str = None) -> dict:
-        """设置杠杆"""
+                           mode: str = None) -> Optional[dict]:
+        """
+        設置槓桿為該幣種最高可用的值。
+        如果設置失敗（如該幣種不支持該槓桿），返回 None 而非拋出異常。
+        """
         inst_id = symbol or self.default_symbol
-        lever = leverage or self.default_leverage
         mgn_mode = mode or self.position_mode
+
+        # 查詢最高槓桿
+        max_lev = await self.get_max_leverage(inst_id)
+        lever = max_lev  # 一律用最高槓桿
 
         logger.info(f"⚙️ 设置杠杆: {inst_id} {lever}x ({mgn_mode})")
         try:
@@ -196,8 +258,8 @@ class OkxOrderManager:
                 "mgnMode": mgn_mode,
             })
         except Exception as e:
-            logger.error(f"设置杠杆失败: {e}")
-            raise
+            logger.warning(f"⚠️ 设置杠杆失败 {inst_id} {lever}x: {e}（跳過該幣種）")
+            return None
 
     async def place_order(
         self,
@@ -285,8 +347,8 @@ class OkxOrderManager:
 
             return res
         except Exception as e:
-            logger.error(f"❌ 下单异常 {symbol_info}: {e}")
-            raise
+            logger.warning(f"⚠️ 下单失败 {symbol_info}: {e}（跳過）")
+            return {"code": "-1", "msg": str(e), "data": [{}]}
 
     async def close_position(self, symbol: str = None) -> dict:
         """平仓"""

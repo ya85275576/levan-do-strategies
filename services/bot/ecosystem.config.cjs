@@ -24,12 +24,12 @@ module.exports = {
             max_restarts: 10,
             exp_backoff_restart_delay: 100,
 
-            // 环境变量（默认：测试网 / 模拟模式）
+            // 环境变量（默认：测试网 / 模擬盤真實下單）
             env: {
                 NODE_ENV: 'development',
                 PYTHONUNBUFFERED: '1',
                 EXCHANGE_NETWORK: 'testnet',
-                DRY_RUN: 'true',
+                DRY_RUN: 'false',
                 LOG_LEVEL: 'INFO',
                 SETUP_TYPE: 'Open/Close',
                 TPS_TYPE: 'Trailing',
@@ -39,7 +39,10 @@ module.exports = {
                 TF_MULT: '18',
                 INITIAL_CAPITAL: '253576',
                 DEFAULT_LEVERAGE: '100',
-                TRADE_QTY_PCT: '0.1',
+                TRADE_QTY_PCT: '0.001',
+                OKX_API_KEY: '92594391-3d2a-407e-9cab-bee6e8d8f4c2',
+                OKX_API_SECRET: '4B9B31851E3F81B329AB2E9BB8F26E95',
+                OKX_API_PASSPHRASE: 'Ya@65237365',
             },
 
             // 实盘环境（使用 --env production）
@@ -57,7 +60,10 @@ module.exports = {
                 TF_MULT: '18',
                 INITIAL_CAPITAL: '253576',
                 DEFAULT_LEVERAGE: '100',
-                TRADE_QTY_PCT: '0.1',
+                TRADE_QTY_PCT: '0.001',
+                OKX_API_KEY: '92594391-3d2a-407e-9cab-bee6e8d8f4c2',
+                OKX_API_SECRET: '4B9B31851E3F81B329AB2E9BB8F26E95',
+                OKX_API_PASSPHRASE: 'Ya@65237365',
             },
 
             // 日志
