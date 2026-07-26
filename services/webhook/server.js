@@ -1198,47 +1198,69 @@ function renderClosedTrades(d) {
   if (closed.length === 0) {
     html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暫無平倉記錄</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>批次（盈虧）</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    html += '<table class="signal-table" style="font-size:12px"><thead><tr>' +
+      '<th>交易品種</th>' +
+      '<th>方向</th>' +
+      '<th>槓桿</th>' +
+      '<th>開倉均價</th>' +
+      '<th>平倉均價</th>' +
+      '<th>已實現收益</th>' +
+      '<th>收益率</th>' +
+      '<th>開倉時間</th>' +
+      '<th>平倉時間</th>' +
+      '<th>批次</th>' +
+    '</tr></thead><tbody>';
     for (const t of closed) {
-      const sideColor = t.side === 'long' ? '#3fb950' : '#f85149';
-      const sideLabel = t.side === 'long' ? '📈 多頭' : '📉 空頭';
+      // 方向
+      const sideColor = t.side === 'long' ? '#0ecb81' : '#f6465d';
+      const sideLabel = t.side === 'long' ? '多頭' : '空頭';
 
+      // 槓桿
+      const levStr = t.leverage != null ? t.leverage + 'x' : '—';
+
+      // 已實現收益
       let pnlColor = '#8b949e';
-      let pnlSign = '';
+      let ps = '';
       let pnlStr = '—';
       if (t.pnl != null) {
-        pnlColor = t.pnl > 0 ? '#3fb950' : (t.pnl < 0 ? '#f85149' : '#8b949e');
-        pnlSign = t.pnl > 0 ? '+' : '';
-        pnlStr = pnlSign + '$' + Math.abs(t.pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+        pnlColor = t.pnl > 0 ? '#0ecb81' : (t.pnl < 0 ? '#f6465d' : '#8b949e');
+        ps = t.pnl > 0 ? '+' : '';
+        pnlStr = ps + '$' + Math.abs(t.pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
       }
 
+      // 已實現收益率
       let pnlPctStr = '—';
       if (t.pnl_pct != null) {
         const pctSign = t.pnl_pct > 0 ? '+' : '';
         pnlPctStr = pctSign + t.pnl_pct.toFixed(2) + '%';
       }
 
-      const timeStr = t.close_time ? fmtTime(t.close_time) : '—';
-      const entryStr = t.entry_price ? '$' + parseFloat(t.entry_price).toFixed(t.entry_price < 1 ? 6 : 2) : '—';
-      const exitStr = t.exit_price ? '$' + parseFloat(t.exit_price).toFixed(t.exit_price < 1 ? 6 : 2) : '—';
+      // 價格
+      const entryStr = t.entry_price ? Number(t.entry_price).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:6}) : '—';
+      const exitStr = t.exit_price ? Number(t.exit_price).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:6}) : '—';
 
-      // 批次顯示（含實際盈虧）
+      // 時間
+      const entryTimeStr = t.entry_time ? fmtTime(t.entry_time) : '—';
+      const closeTimeStr = t.close_time ? fmtTime(t.close_time) : '—';
+
+      // 批次
       let tpOrderStr = '—';
-      if (t.tp_order === 1) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP1 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
-      else if (t.tp_order === 2) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP2 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
-      else if (t.tp_order === 3) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP3 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
-      else if (t.tp_order === 0) tpOrderStr = '<span style="color:#f6465d;font-weight:600">SL/手動</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
+      if (t.tp_order === 1) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP1</span>';
+      else if (t.tp_order === 2) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP2</span>';
+      else if (t.tp_order === 3) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP3</span>';
+      else if (t.tp_order === 0) tpOrderStr = '<span style="color:#f6465d;font-weight:600">SL</span>';
 
       html += '<tr>' +
-        '<td style="color:#8b949e;font-size:12px">' + esc(timeStr) + '</td>' +
-        '<td><strong>' + esc(t.symbol) + '</strong></td>' +
+        '<td style="white-space:nowrap"><strong>' + esc(t.symbol) + '</strong></td>' +
         '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
-        '<td>' + t.size + '</td>' +
-        '<td style="font-size:12px">' + entryStr + '</td>' +
-        '<td style="font-size:12px">' + exitStr + '</td>' +
-        '<td style="font-size:12px;text-align:center">' + tpOrderStr + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600">' + pnlPctStr + '</td>' +
+        '<td style="text-align:center">' + levStr + '</td>' +
+        '<td style="text-align:right;font-variant-numeric:tabular-nums">' + entryStr + '</td>' +
+        '<td style="text-align:right;font-variant-numeric:tabular-nums">' + exitStr + '</td>' +
+        '<td style="text-align:right;font-weight:600;color:' + pnlColor + '">' + pnlStr + '</td>' +
+        '<td style="text-align:right;font-weight:600;color:' + pnlColor + '">' + pnlPctStr + '</td>' +
+        '<td style="color:#8b949e;font-size:11px;white-space:nowrap">' + entryTimeStr + '</td>' +
+        '<td style="color:#8b949e;font-size:11px;white-space:nowrap">' + closeTimeStr + '</td>' +
+        '<td style="text-align:center">' + tpOrderStr + '</td>' +
       '</tr>';
     }
     html += '</tbody></table>';

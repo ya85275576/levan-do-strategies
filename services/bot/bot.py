@@ -133,6 +133,9 @@ class SignalHandler:
         # 最近平倉交易記錄（由 TP/SL 處理器寫入，供狀態檔收集）
         self._recent_trades: list = []
 
+        # 入場時間（供 closed_trades 開倉時間欄位使用）
+        self._entry_time: Optional[str] = None
+
         # 统计
         self.total_signals: int = 0
         self.last_signal: Optional[SignalType] = None
@@ -165,13 +168,14 @@ class SignalHandler:
         self.total_signals += 1
         self.last_signal = signal
 
-        # 入場信號時快照 TP 目標價格
+        # 入場信號時快照 TP 目標價格和入場時間
         if signal in (SignalType.LONG_ENTRY, SignalType.SHORT_ENTRY):
             self._tp_prices = [tp_sl.tp1, tp_sl.tp2, tp_sl.tp3]
             self._tp_entry_qty = 0.0  # will be set in _handle_* methods
             self._tp_status = ["pending", "pending", "pending"]
             self._tp_pnl = [0.0, 0.0, 0.0]
             self._tp_hit_level = 0
+            self._entry_time = datetime.now(timezone.utc).isoformat()
 
         action, side = SIGNAL_ACTION_MAP.get(signal, ("none", "none"))
         if action == "none":
@@ -704,9 +708,18 @@ class SignalHandler:
         self._tp_status = ["pending", "pending", "pending"]
         self._tp_pnl = [0.0, 0.0, 0.0]
         self._recent_trades = []
+        self._entry_time = None
 
     def get_summary(self) -> dict:
         """获取信号处理器状态摘要"""
+        # 將 entry_time 注入到 recent_trades 中
+        enriched_trades = []
+        for trade in self._recent_trades:
+            trade_with_time = dict(trade)
+            if "entry_time" not in trade_with_time:
+                trade_with_time["entry_time"] = self._entry_time
+            enriched_trades.append(trade_with_time)
+
         s = {
             "symbol": self.symbol,
             "position_side": self._position_side,
@@ -719,7 +732,8 @@ class SignalHandler:
             "tp_hit_level": self._tp_hit_level,
             "tp_entry_qty": self._tp_entry_qty,
             "leverage": self._leverage,
-            "recent_trades": list(self._recent_trades),
+            "entry_time": self._entry_time,
+            "recent_trades": enriched_trades,
         }
         # 取出後清空，避免重複收集
         self._recent_trades.clear()
@@ -1184,6 +1198,10 @@ class OkxTradingBot:
             if entry_price and entry_price > 0 and closed_qty > 0:
                 pnl_pct = (pnl / (entry_price * closed_qty)) * 100
 
+            # 從快照中取得 entry_time 和 leverage
+            entry_time = last_state.get("entry_time")
+            leverage = last_state.get("leverage", self.config.get("default_leverage", 1))
+
             self.closed_trades.append({
                 "symbol": sym,
                 "side": side,
@@ -1192,7 +1210,9 @@ class OkxTradingBot:
                 "size": round(closed_qty, 4),
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl_pct, 2),
+                "entry_time": entry_time,
                 "close_time": datetime.now(timezone.utc).isoformat(),
+                "leverage": leverage,
                 "tp_order": 0,
                 "tp_target": None,
             })
@@ -1207,9 +1227,13 @@ class OkxTradingBot:
             qty = self.order_manager.get_simulated_position_size(sym)
             sh = unit.signal_handler.get_summary()
             entry = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
+            entry_time = sh.get("entry_time")
+            leverage = sh.get("leverage", self.config.get("default_leverage", 1))
             self._last_positions_snapshot[sym] = {
                 "qty": qty,
                 "entry_price": entry,
+                "entry_time": entry_time,
+                "leverage": leverage,
             }
 
         # 保留最近 200 筆
