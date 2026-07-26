@@ -372,19 +372,19 @@ app.get('/api/status', async (_req, res) => {
   let botClosedTrades = [];
   let botClosedTradesSummary = null;
   if (botStatus && botStatus.positions && botStatus.positions.length > 0) {
-    botEquity = botStatus.equity || null;
-    botTotalPnl = botStatus.total_pnl || null;
-    botInitialCapital = botStatus.initial_capital || null;
+    botEquity = botStatus.equity != null ? botStatus.equity : null;
+    botTotalPnl = botStatus.total_pnl != null ? botStatus.total_pnl : null;
+    botInitialCapital = botStatus.initial_capital != null ? botStatus.initial_capital : null;
     botClosedTrades = botStatus.closed_trades || [];
     botClosedTradesSummary = botStatus.closed_trades_summary || null;
     positionsList = botStatus.positions.map(p => ({
       symbol: p.symbol,
       side: p.side,
       size: p.size,
-      entry_price: p.entry_price || null,
-      current_price: p.current_price || null,
-      pnl: p.pnl || null,
-      pnl_pct: p.pnl_pct || null,
+      entry_price: p.entry_price != null ? p.entry_price : null,
+      current_price: p.current_price != null ? p.current_price : null,
+      pnl: p.pnl != null ? p.pnl : null,
+      pnl_pct: p.pnl_pct != null ? p.pnl_pct : null,
     }));
   } else {
     // 降級：使用 Webhook 本地的模擬持倉
