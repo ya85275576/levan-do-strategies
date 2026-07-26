@@ -893,11 +893,16 @@ class OkxTradingBot:
             "BOT_STATUS_FILE",
             "/tmp/le-van-do-bot-status.json",
         )
+        self._closed_trades_file = os.environ.get(
+            "BOT_CLOSED_TRADES_FILE",
+            "/tmp/le-van-do-bot-closed.json",
+        )
         self._flush_task: Optional[asyncio.Task] = None
         self._signal_queue: list = []
 
-        # 歷史平倉記錄（供 Webhook 儀表板讀取）
+        # 歷史平倉記錄（供 Webhook 儀表板讀取，持久化存檔）
         self.closed_trades: list = []
+        self._load_closed_trades()
         self._last_positions_snapshot: Dict[str, dict] = {}  # {symbol: {"qty": float, "entry_price": float}}
 
     # ---- 策略信号回调 ----
@@ -921,6 +926,39 @@ class OkxTradingBot:
             "signal": signal.value,
             "price": round(tp_sl.entry, 2) if tp_sl.entry else None,
         })
+
+    # ---- 歷史平倉持久化 ----
+
+    def _load_closed_trades(self):
+        """從持久化檔案載入歷史平倉記錄"""
+        try:
+            if os.path.exists(self._closed_trades_file):
+                with open(self._closed_trades_file, "r") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.closed_trades = data
+                    logger.info(f"📂 載入歷史平倉記錄: {len(self.closed_trades)} 筆")
+                else:
+                    logger.warning(f"⚠️ 歷史平倉檔案格式錯誤，重新開始")
+                    self.closed_trades = []
+            else:
+                self.closed_trades = []
+        except Exception as e:
+            logger.warning(f"⚠️ 讀取歷史平倉檔案失敗: {e}")
+            self.closed_trades = []
+
+    def _save_closed_trades(self):
+        """將歷史平倉記錄持久化到檔案"""
+        try:
+            # 保留最近 500 筆
+            if len(self.closed_trades) > 500:
+                self.closed_trades = self.closed_trades[-500:]
+            tmp = self._closed_trades_file + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.closed_trades, f, ensure_ascii=False)
+            os.replace(tmp, self._closed_trades_file)
+        except Exception as e:
+            logger.error(f"寫入歷史平倉檔案失敗: {e}")
 
     # ---- 市场数据回调 ----
 
@@ -1178,6 +1216,9 @@ class OkxTradingBot:
         if len(self.closed_trades) > 200:
             self.closed_trades = self.closed_trades[-200:]
 
+        # 持久化存檔
+        self._save_closed_trades()
+
     async def _flush_status_file(self):
         """
         定期將 Bot 狀態寫入 JSON 檔案，供 Webhook 儀表板讀取。
@@ -1257,16 +1298,30 @@ class OkxTradingBot:
                         for pct in tp_pcts:
                             tp_margins.append(round(margin_val * pct / 100.0, 2))
 
+                        # OKX 風格專業欄位計算
+                        MMR = 0.005  # 維持保證金率 (0.5%)
+                        FEE_RATE = 0.0005  # 交易手續費率 (0.05%)
+                        if side == "long":
+                            liquidation_price = entry_price * (1 - 1/leverage_val + MMR)
+                            break_even_price = entry_price * (1 + FEE_RATE * 2)
+                        else:
+                            liquidation_price = entry_price * (1 + 1/leverage_val - MMR)
+                            break_even_price = entry_price * (1 - FEE_RATE * 2)
+                        maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
+
                         positions_list.append({
                             "symbol": sym,
                             "side": side,
                             "size": abs(pos_qty),
                             "entry_price": entry_price,
                             "current_price": round(current_price, 8),
+                            "liquidation_price": round(liquidation_price, 8) if leverage_val > 0 else None,
+                            "break_even_price": round(break_even_price, 8) if entry_price > 0 else None,
                             "pnl": round(pnl, 2),
                             "pnl_pct": round(pnl_pct, 2),
                             "leverage": leverage_val,
                             "margin": round(margin_val, 2),
+                            "maintenance_margin_rate": maintenance_margin_rate,
                             "tp_prices": tp_prices,
                             "tp_status": tp_status,
                             "tp_pnl": tp_pnl,
@@ -1379,16 +1434,30 @@ class OkxTradingBot:
                     for pct in tp_pcts:
                         tp_margins.append(round(margin_val * pct / 100.0, 2))
 
+                    # OKX 風格專業欄位計算
+                    MMR = 0.005  # 維持保證金率 (0.5%)
+                    FEE_RATE = 0.0005  # 交易手續費率 (0.05%)
+                    if side == "long":
+                        liquidation_price = entry_price * (1 - 1/leverage_val + MMR)
+                        break_even_price = entry_price * (1 + FEE_RATE * 2)
+                    else:
+                        liquidation_price = entry_price * (1 + 1/leverage_val - MMR)
+                        break_even_price = entry_price * (1 - FEE_RATE * 2)
+                    maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
+
                     positions_list.append({
                         "symbol": sym,
                         "side": side,
                         "size": abs(pos_qty),
                         "entry_price": entry_price,
                         "current_price": round(current_price, 8),
+                        "liquidation_price": round(liquidation_price, 8) if leverage_val > 0 else None,
+                        "break_even_price": round(break_even_price, 8) if entry_price > 0 else None,
                         "pnl": round(pnl, 2),
                         "pnl_pct": round(pnl_pct, 2),
                         "leverage": leverage_val,
                         "margin": round(margin_val, 2),
+                        "maintenance_margin_rate": maintenance_margin_rate,
                         "tp_prices": tp_prices,
                         "tp_status": tp_status,
                         "tp_pnl": tp_pnl,

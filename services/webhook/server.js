@@ -223,6 +223,25 @@ function readBotStatus() {
   }
 }
 
+const BOT_CLOSED_TRADES_FILE = '/tmp/le-van-do-bot-closed.json';
+
+/**
+ * 从持久化文件读取完整历史平仓记录
+ */
+function readClosedTrades() {
+  try {
+    if (!existsSync(BOT_CLOSED_TRADES_FILE)) {
+      return [];
+    }
+    const raw = readFileSync(BOT_CLOSED_TRADES_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取历史平仓文件失败: ${err.message}`);
+    return [];
+  }
+}
+
 // ======== 启动前配置检查 ========
 
 const cfgCheck = validateConfig();
@@ -375,18 +394,27 @@ app.get('/api/status', async (_req, res) => {
     botEquity = botStatus.equity != null ? botStatus.equity : null;
     botTotalPnl = botStatus.total_pnl != null ? botStatus.total_pnl : null;
     botInitialCapital = botStatus.initial_capital != null ? botStatus.initial_capital : null;
-    botClosedTrades = botStatus.closed_trades || [];
-    botClosedTradesSummary = botStatus.closed_trades_summary || null;
+    botClosedTrades = readClosedTrades();
+    {
+      const ctCount = botClosedTrades.length;
+      const ctPnl = botClosedTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+      botClosedTradesSummary = botClosedTradesSummary || { count: ctCount, total_closed_pnl: ctPnl };
+      botClosedTradesSummary.count = ctCount;
+      botClosedTradesSummary.total_closed_pnl = ctPnl;
+    }
     positionsList = botStatus.positions.map(p => ({
       symbol: p.symbol,
       side: p.side,
       size: p.size,
       entry_price: p.entry_price != null ? p.entry_price : null,
       current_price: p.current_price != null ? p.current_price : null,
+      liquidation_price: p.liquidation_price != null ? p.liquidation_price : null,
+      break_even_price: p.break_even_price != null ? p.break_even_price : null,
       pnl: p.pnl != null ? p.pnl : null,
       pnl_pct: p.pnl_pct != null ? p.pnl_pct : null,
       leverage: p.leverage != null ? p.leverage : null,
       margin: p.margin != null ? p.margin : null,
+      maintenance_margin_rate: p.maintenance_margin_rate != null ? p.maintenance_margin_rate : null,
       tp_prices: p.tp_prices || [null, null, null],
       tp_status: p.tp_status || ["pending", "pending", "pending"],
       tp_pnl: p.tp_pnl || [0, 0, 0],
@@ -685,6 +713,80 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .signal-count-item .sc-value { font-size: 24px; font-weight: 700; }
   .signal-count-item .sc-label { font-size: 11px; color: #8b949e; margin-top: 2px; }
 
+  /* OKX-style compact position cards */
+  .okx-pos-card {
+    display: flex; align-items: center; flex-wrap: nowrap; gap: 8px;
+    background: linear-gradient(135deg, #1a1d29 0%, #161b22 100%);
+    border: 1px solid #2d3343;
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 8px;
+    transition: border-color 0.2s;
+    font-size: 13px;
+    min-height: 46px;
+  }
+  .okx-pos-card:hover { border-color: #58a6ff; }
+  .okx-pos-card.pos-long { border-left: 3px solid #0ecb81; }
+  .okx-pos-card.pos-short { border-left: 3px solid #f6465d; }
+
+  .okx-pos-card .pos-symbol { font-size: 14px; font-weight: 700; color: #f0f6fc; min-width: 90px; }
+  .okx-pos-card .pos-leverage {
+    font-size: 11px; font-weight: 700; color: #8b949e;
+    background: #2d3343; border-radius: 3px; padding: 1px 6px;
+    border: 1px solid #3d4353; min-width: 38px; text-align: center;
+  }
+  .okx-pos-card .pos-side-badge {
+    font-size: 11px; font-weight: 700; border-radius: 3px; padding: 1px 8px;
+    min-width: 36px; text-align: center;
+  }
+  .okx-pos-card .pos-side-badge.long { color: #0ecb81; background: #0ecb8115; }
+  .okx-pos-card .pos-side-badge.short { color: #f6465d; background: #f6465d15; }
+
+  .okx-pos-card .pos-field {
+    font-family: 'Consolas', monospace;
+    white-space: nowrap;
+    font-size: 12px;
+    color: #f0f6fc;
+    padding: 0 4px;
+  }
+  .okx-pos-card .pos-field .fl {
+    font-size: 10px;
+    color: #6a7283;
+    font-family: 'Segoe UI', -apple-system, 'PingFang SC', sans-serif;
+    display: block;
+    margin-bottom: 1px;
+  }
+  .okx-pos-card .pos-field .fv { font-weight: 600; }
+  .okx-pos-card .pos-field .fv.positive { color: #0ecb81; }
+  .okx-pos-card .pos-field .fv.negative { color: #f6465d; }
+  .okx-pos-card .pos-field .fv.muted { color: #6a7283; font-weight: 400; }
+  .okx-pos-card .pos-field .fv.price-up { color: #0ecb81; }
+  .okx-pos-card .pos-field .fv.price-down { color: #f6465d; }
+
+  .okx-pos-card .pos-separator {
+    width: 1px; height: 32px; background: #2d3343; flex-shrink: 0;
+  }
+
+  .okx-tp-group { font-size: 11px; font-family: 'Consolas', monospace; }
+  .okx-tp-group .hit { color: #0ecb81; }
+  .okx-tp-group .missed { color: #f6465d; }
+  .okx-tp-group .pending { color: #6a7283; }
+
+  .okx-batch-group { font-size: 10px; font-family: 'Consolas', monospace; }
+  .okx-batch-group .positive { color: #0ecb81; }
+  .okx-batch-group .negative { color: #f6465d; }
+  .okx-batch-group .muted { color: #6a7283; }
+
+  /* Positions summary bar */
+  .pos-summary {
+    display: flex; gap: 24px; padding: 12px 20px; margin-bottom: 16px;
+    background: linear-gradient(135deg, #1a1d29 0%, #0d1117 100%);
+    border-radius: 10px; border: 1px solid #2d3343;
+  }
+  .pos-summary-item { text-align: center; min-width: 100px; }
+  .pos-summary-item .sum-label { font-size: 11px; color: #6a7283; text-transform: uppercase; }
+  .pos-summary-item .sum-value { font-size: 20px; font-weight: 700; margin-top: 4px; font-family: 'Consolas', monospace; }
+
   /* Empty state */
   .empty-state { text-align: center; padding: 40px 20px; color: #484f58; }
   .empty-state .icon { font-size: 36px; margin-bottom: 8px; }
@@ -951,128 +1053,131 @@ function renderSignals(d) {
   return html;
 }
 
+function fmtPrice(v) {
+  if (v == null || v <= 0) return null;
+  const n = Number(v);
+  return n < 1 ? n.toFixed(6) : n.toFixed(2);
+}
+
+function pnlClass(v) {
+  if (v == null) return '';
+  return v > 0 ? 'positive' : (v < 0 ? 'negative' : '');
+}
+
+function pnlSign(v) {
+  if (v == null) return '';
+  return v > 0 ? '+' : '';
+}
+
 function renderPositions(d) {
   const positions = d.positions || [];
   const eq = d.equity || {};
-  let html = '<div class="card"><div class="card-title">💼 模拟持仓 <span style="font-weight:400;color:#484f58;font-size:12px">' + positions.length + ' 个</span></div>';
+  let html = '<div class="card"><div class="card-title">💼 持倉 <span style="font-weight:400;color:#6a7283;font-size:12px">' + positions.length + ' 個持倉</span></div>';
 
   // 權益摘要列
   const totalPnl = eq.total_pnl;
   if (totalPnl != null) {
     const initCap = eq.initial_capital || 0;
     const equityVal = eq.equity || (initCap + totalPnl);
-    const pnlColor = totalPnl >= 0 ? '#3fb950' : '#f85149';
-    const pnlSign = totalPnl >= 0 ? '+' : '';
-    html += '<div style="display:flex;gap:24px;padding:10px 12px;margin-bottom:12px;background:#0d1117;border-radius:8px;border:1px solid #21262d">' +
-      '<div><span style="color:#8b949e;font-size:12px">初始資金</span><div style="font-size:20px;font-weight:700;color:#f0f6fc">$' + initCap.toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
-      '<div><span style="color:#8b949e;font-size:12px">總權益</span><div style="font-size:20px;font-weight:700;color:#f0f6fc">$' + Number(equityVal).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
-      '<div><span style="color:#8b949e;font-size:12px">總盈虧</span><div style="font-size:20px;font-weight:700;color:' + pnlColor + '">' + pnlSign + '$' + Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+    html += '<div class="pos-summary">' +
+      '<div class="pos-summary-item"><div class="sum-label">初始資金</div><div class="sum-value" style="color:#f0f6fc">$' + initCap.toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+      '<div class="pos-summary-item"><div class="sum-label">總權益</div><div class="sum-value" style="color:#f0f6fc">$' + Number(equityVal).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+      '<div class="pos-summary-item"><div class="sum-label">總盈虧</div><div class="sum-value ' + pnlClass(totalPnl) + '">' + pnlSign(totalPnl) + '$' + Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
     '</div>';
   }
 
   if (positions.length === 0) {
-    html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div>';
+    html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暫無持倉</div></div>';
   } else {
-    html += '<div style="overflow-x:auto"><table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>槓桿</th><th>保證金</th><th>入場價</th><th>現價</th><th>TP1</th><th>TP2</th><th>TP3</th><th>分批盈虧</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const p of positions) {
-      const sideColor = p.side === 'long' ? '#3fb950' : '#f85149';
-      const sideLabel = p.side === 'long' ? '📈 多頭' : '📉 空頭';
+      const isLong = p.side === 'long';
+      const posClass = isLong ? 'pos-long' : 'pos-short';
+      const sideLabel = isLong ? '多頭' : '空頭';
 
-      // 盈虧顏色
-      let pnlColor = '#8b949e';
-      let pnlSign = '';
+      // 盈虧
+      const pnlVal = p.pnl;
+      const pnlPctVal = p.pnl_pct;
+      const pnlCls = pnlClass(pnlVal);
       let pnlStr = '—';
-      if (p.pnl != null) {
-        pnlColor = p.pnl > 0 ? '#3fb950' : (p.pnl < 0 ? '#f85149' : '#8b949e');
-        pnlSign = p.pnl > 0 ? '+' : '';
-        pnlStr = pnlSign + '$' + Math.abs(p.pnl).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      let pnlPctStr = '';
+      if (pnlVal != null) {
+        pnlStr = pnlSign(pnlVal) + '$' + Math.abs(pnlVal).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      }
+      if (pnlPctVal != null) {
+        pnlPctStr = ' (' + pnlSign(pnlPctVal) + pnlPctVal.toFixed(2) + '%)';
       }
 
-      let pnlPctStr = '—';
-      if (p.pnl_pct != null) {
-        const pctSign = p.pnl_pct > 0 ? '+' : '';
-        pnlPctStr = pctSign + p.pnl_pct.toFixed(2) + '%';
+      // 價格
+      const entryStr = fmtPrice(p.entry_price);
+      const markStr = fmtPrice(p.current_price);
+
+      const leverageStr = p.leverage != null ? p.leverage + 'x' : '—';
+      const marginStr = p.margin != null ? '$' + Number(p.margin).toFixed(2) : '—';
+
+      // 價格顏色（多頭：漲綠跌紅；空頭：漲紅跌綠）
+      function priceColor(price, ref) {
+        if (price == null || ref == null || ref <= 0) return '';
+        const diff = Number(price) - Number(ref);
+        if (isLong) return diff >= 0 ? 'price-up' : 'price-down';
+        return diff <= 0 ? 'price-up' : 'price-down';
       }
 
-      // 價格格式化
-      let priceStr = '—';
-      if (p.current_price != null && p.current_price > 0) {
-        priceStr = '$' + parseFloat(p.current_price).toFixed(p.current_price < 1 ? 6 : 2);
-      }
-
-      let entryStr = '—';
-      if (p.entry_price != null && p.entry_price > 0) {
-        entryStr = '$' + parseFloat(p.entry_price).toFixed(p.entry_price < 1 ? 6 : 2);
-      }
-
-      // 槓桿顯示
-      let leverageStr = '—';
-      if (p.leverage != null) {
-        leverageStr = p.leverage + 'x';
-      }
-
-      // 保證金顯示
-      let marginStr = '—';
-      if (p.margin != null) {
-        marginStr = '$' + Number(p.margin).toFixed(2);
-      }
-
-      // TP 顯示輔助函數
-      function tpCell(price, status) {
-        if (price == null || price <= 0) return '<span style="color:#484f58">—</span>';
-        let color = '#8b949e';
-        let icon = '';
-        if (status === 'hit') { color = '#3fb950'; icon = ' ✓'; }
-        else if (status === 'missed') { color = '#f85149'; icon = ' ✗'; }
-        const pStr = Number(price).toFixed(price < 1 ? 6 : 2);
-        return '<span style="color:' + color + ';font-size:11px;white-space:nowrap">$' + pStr + icon + '</span>';
-      }
-
-      // TP 價格
+      // TP 價格一行顯示 price/price/price
       const tpPrices = p.tp_prices || [null, null, null];
       const tpStatus = p.tp_status || ['pending', 'pending', 'pending'];
-      const tpHitLevel = p.tp_hit_level || 0;
-
-      const tp1html = tpCell(tpPrices[0], tpStatus[0]);
-      const tp2html = tpCell(tpPrices[1], tpStatus[1]);
-      const tp3html = tpCell(tpPrices[2], tpStatus[2]);
-
-      // 分批盈虧顯示
       const tpPnl = p.tp_pnl || [0, 0, 0];
-      const tpMargins = p.tp_margins || [null, null, null];
-      function batchPnlStr(idx) {
+
+      function tpOne(idx) {
+        const st = tpStatus[idx];
+        const pr = tpPrices[idx];
+        if (pr == null || pr <= 0) return '<span class="pending">--</span>';
+        const pStr = Number(pr).toFixed(pr < 1 ? 6 : 2);
+        if (st === 'hit') return '<span class="hit">' + pStr + '</span>';
+        if (st === 'missed') return '<span class="missed">' + pStr + '</span>';
+        return '<span class="pending">' + pStr + '</span>';
+      }
+      const tpLine = tpOne(0) + '/' + tpOne(1) + '/' + tpOne(2);
+
+      // 分批盈虧 TP1:+$X|TP2:+$Y|TP3:+$Z
+      function batchOne(idx) {
         const st = tpStatus[idx];
         if (st === 'hit') {
-          const pnlVal = tpPnl[idx] || 0;
-          const c = pnlVal >= 0 ? '#3fb950' : '#f85149';
-          const s = pnlVal >= 0 ? '+' : '';
-          return '<span style="color:' + c + ';font-weight:600">' + s + '$' + Math.abs(pnlVal).toFixed(2) + '</span>';
+          const pv = tpPnl[idx] || 0;
+          const c = pv >= 0 ? 'positive' : 'negative';
+          return '<span class="' + c + '">TP' + (idx+1) + ':' + pnlSign(pv) + '$' + Math.abs(pv).toFixed(2) + '</span>';
         } else if (st === 'missed') {
-          return '<span style="color:#f85149">SL</span>';
+          return '<span class="negative">TP' + (idx+1) + ':SL</span>';
         }
-        return '<span style="color:#484f58">—</span>';
+        return '<span class="muted">TP' + (idx+1) + ':--</span>';
       }
-      let batchPnlHtml = '<span style="font-size:11px">' +
-        'TP1:' + batchPnlStr(0) + ' | TP2:' + batchPnlStr(1) + ' | TP3:' + batchPnlStr(2) +
-      '</span>';
+      const batchLine = batchOne(0) + '|' + batchOne(1) + '|' + batchOne(2);
 
-      html += '<tr>' +
-        '<td><strong>' + esc(p.symbol) + '</strong></td>' +
-        '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
-        '<td>' + p.size + '</td>' +
-        '<td>' + leverageStr + '</td>' +
-        '<td style="font-size:12px">' + marginStr + '</td>' +
-        '<td style="font-size:12px">' + entryStr + '</td>' +
-        '<td style="font-size:12px">' + priceStr + '</td>' +
-        '<td style="font-size:12px;text-align:center">' + tp1html + '</td>' +
-        '<td style="font-size:12px;text-align:center">' + tp2html + '</td>' +
-        '<td style="font-size:12px;text-align:center">' + tp3html + '</td>' +
-        '<td style="font-size:11px">' + batchPnlHtml + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600;font-size:13px">' + pnlStr + '</td>' +
-        '<td style="color:' + pnlColor + ';font-weight:600;font-size:13px">' + pnlPctStr + '</td>' +
-      '</tr>';
+      // ---- 緊湊單行卡片 ----
+      html += '<div class="okx-pos-card ' + posClass + '">' +
+        // 交易對 + 槓桿 + 方向
+        '<span class="pos-symbol">' + esc(p.symbol) + '</span>' +
+        '<span class="pos-leverage">' + leverageStr + '</span>' +
+        '<span class="pos-side-badge ' + p.side + '">' + sideLabel + '</span>' +
+        '<span class="pos-separator"></span>' +
+        // 持倉數量
+        '<span class="pos-field" title="持倉量"><span class="fl">數量</span><span class="fv">' + (p.size != null ? Number(p.size).toFixed(4) : '—') + '</span></span>' +
+        // 保證金
+        '<span class="pos-field" title="保證金"><span class="fl">保證金</span><span class="fv">' + marginStr + '</span></span>' +
+        '<span class="pos-separator"></span>' +
+        // 入場價
+        '<span class="pos-field" title="開倉均價"><span class="fl">入場價</span><span class="fv">' + (entryStr ? '$' + entryStr : '—') + '</span></span>' +
+        // 現價（顏色相對於入場價）
+        '<span class="pos-field" title="標記價格"><span class="fl">現價</span><span class="fv ' + priceColor(p.current_price, p.entry_price) + '">' + (markStr ? '$' + markStr : '—') + '</span></span>' +
+        '<span class="pos-separator"></span>' +
+        // TP1/TP2/TP3 濃縮一行
+        '<span class="pos-field" title="TP1/TP2/TP3"><span class="fl">TP</span><span class="fv okx-tp-group">' + tpLine + '</span></span>' +
+        // 分批盈虧
+        '<span class="pos-field" title="分批盈虧" style="min-width:130px"><span class="fl">分批盈虧</span><span class="fv okx-batch-group">' + batchLine + '</span></span>' +
+        '<span class="pos-separator"></span>' +
+        // 盈虧+%
+        '<span class="pos-field" style="min-width:80px;text-align:right"><span class="fl">盈虧</span><span class="fv ' + pnlCls + '">' + pnlStr + pnlPctStr + '</span></span>' +
+      '</div>';
     }
-    html += '</tbody></table></div>';
   }
 
   html += '</div>';
@@ -1093,7 +1198,7 @@ function renderClosedTrades(d) {
   if (closed.length === 0) {
     html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暫無平倉記錄</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>批次</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    html += '<table class="signal-table"><thead><tr><th>時間</th><th>交易對</th><th>方向</th><th>數量</th><th>開倉價</th><th>平倉價</th><th>批次（盈虧）</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const t of closed) {
       const sideColor = t.side === 'long' ? '#3fb950' : '#f85149';
       const sideLabel = t.side === 'long' ? '📈 多頭' : '📉 空頭';
@@ -1117,12 +1222,12 @@ function renderClosedTrades(d) {
       const entryStr = t.entry_price ? '$' + parseFloat(t.entry_price).toFixed(t.entry_price < 1 ? 6 : 2) : '—';
       const exitStr = t.exit_price ? '$' + parseFloat(t.exit_price).toFixed(t.exit_price < 1 ? 6 : 2) : '—';
 
-      // 批次顯示
+      // 批次顯示（含實際盈虧）
       let tpOrderStr = '—';
-      if (t.tp_order === 1) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP1 ✓</span>';
-      else if (t.tp_order === 2) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP2 ✓</span>';
-      else if (t.tp_order === 3) tpOrderStr = '<span style="color:#3fb950;font-weight:600">TP3 ✓</span>';
-      else if (t.tp_order === 0) tpOrderStr = '<span style="color:#f85149;font-weight:600">SL/手動</span>';
+      if (t.tp_order === 1) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP1 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
+      else if (t.tp_order === 2) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP2 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
+      else if (t.tp_order === 3) tpOrderStr = '<span style="color:#0ecb81;font-weight:600">TP3 ✓</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
+      else if (t.tp_order === 0) tpOrderStr = '<span style="color:#f6465d;font-weight:600">SL/手動</span>' + (t.pnl != null ? ' <span style="color:' + (t.pnl > 0 ? '#0ecb81' : '#f6465d') + ';font-size:11px">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl).toFixed(2) + '</span>' : '');
 
       html += '<tr>' +
         '<td style="color:#8b949e;font-size:12px">' + esc(timeStr) + '</td>' +
