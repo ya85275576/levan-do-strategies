@@ -183,6 +183,8 @@ class SignalHandler:
             logger.info(f"[{self.symbol}] Trailing: 开多仓 {qty} @ {price:.2f}")
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "buy", qty, "market")
+            self._position_side = "long"
+            self._entry_price = price
 
         elif signal == SignalType.SHORT_ENTRY:
             pos = self.om.get_simulated_position_size(self.symbol)
@@ -193,6 +195,8 @@ class SignalHandler:
             logger.info(f"[{self.symbol}] Trailing: 开空仓 {qty} @ {price:.2f}")
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "sell", qty, "market")
+            self._position_side = "short"
+            self._entry_price = price
 
     async def _handle_atr(self, signal, action, side, price, tp_sl):
         if signal == SignalType.LONG_ENTRY:
@@ -253,16 +257,19 @@ class SignalHandler:
             await self.om.set_leverage(self.symbol)
             await self.om.place_order(self.symbol, "buy", qty, "market")
             self._position_side = "long"
+            self._entry_price = price
 
         elif signal == SignalType.SHORT_ENTRY:
             logger.info(f"[{self.symbol}] Options: 平多仓")
             await self.om.close_position(self.symbol)
             self._position_side = None
+            self._entry_price = 0.0
 
         elif signal == SignalType.LONG_EXIT:
             logger.info(f"[{self.symbol}] Options: 手动平多仓")
             await self.om.close_position(self.symbol)
             self._position_side = None
+            self._entry_price = 0.0
 
         elif signal == SignalType.SHORT_EXIT:
             logger.info(f"[{self.symbol}] Options: 手动平空仓")
@@ -717,9 +724,10 @@ class OkxTradingBot:
             )
 
         # 更新快照供下次比對
-        for sym in self.trading_units:
+        for sym, unit in self.trading_units.items():
             qty = self.order_manager.get_simulated_position_size(sym)
-            entry = self.order_manager._simulated_entry_price.get(sym, 0)
+            sh = unit.signal_handler.get_summary()
+            entry = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
             self._last_positions_snapshot[sym] = {
                 "qty": qty,
                 "entry_price": entry,
@@ -752,7 +760,7 @@ class OkxTradingBot:
                     
                     # 從 Order Manager 取得實際持倉數量（不限於 SignalHandler 內部狀態）
                     pos_qty = self.order_manager.get_simulated_position_size(sym)
-                    entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                    entry_price = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
                     
                     symbols_state[sym] = {
                         "total_signals": sh["total_signals"],
@@ -847,7 +855,7 @@ class OkxTradingBot:
                 st = unit.strategy.get_status()
                 
                 pos_qty = self.order_manager.get_simulated_position_size(sym)
-                entry_price = self.order_manager._simulated_entry_price.get(sym, sh["entry_price"])
+                entry_price = self.order_manager._simulated_entry_price.get(sym, 0) or sh["entry_price"] or 0
                 
                 symbols_state[sym] = {
                     "total_signals": sh["total_signals"],
