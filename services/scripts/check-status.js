@@ -325,6 +325,76 @@ export async function checkStatus(options = {}) {
   };
 }
 
+// ======== 通知行生成 ========
+
+function buildNotifyLine(result) {
+  const s = result.summary;
+  if (!s) return null;
+
+  // 进程状态图标
+  const procIcon = s.processesOnline ? '✅' : '❌';
+  const exIcon = s.exchangeOnline ? '✅' : '❌';
+  const sysIcon = s.systemHealthy ? '🟢' : '⚠️';
+
+  // 信号增量
+  let signalPart = `累计 ${s.totalSignals} 条`;
+  if (s.newSignals !== null && s.newSignals !== undefined) {
+    if (s.newSignals > 0) {
+      signalPart += ` | 新信号 +${s.newSignals} 🆕`;
+    } else if (s.newSignals === 0) {
+      signalPart += ` | 无新信号`;
+    }
+  }
+
+  // 最新信号摘要
+  let lastSigPart = '';
+  if (s.recentSignals && s.recentSignals.length > 0 && s.newSignals !== 0) {
+    const first = s.recentSignals[0];
+    const iconMap = { longE: '📗', shortE: '📕', longX: '📘', shortX: '📙' };
+    const icon = iconMap[first.type] || '📡';
+    lastSigPart = ` | ${icon} ${first.type}@${first.symbol}`;
+    if (first.price) lastSigPart += ` ($${first.price})`;
+  }
+
+  const ts = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+
+  return `🤖 LE VAN DO® 信号报告 [${ts}] | ${signalPart}${lastSigPart} | 进程 ${procIcon} | 交易所 ${exIcon} | 系统 ${sysIcon}`;
+}
+
+// ======== Webhook 推送 ========
+
+async function postWebhook(url, result) {
+  try {
+    // 构建简洁载荷
+    const payload = {
+      text: buildNotifyLine(result),
+      summary: result.summary,
+      timestamp: new Date().toISOString(),
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) {
+      console.error(`[Webhook] ⚠️ HTTP ${resp.status}: ${resp.statusText}`);
+    } else {
+      console.log(`[Webhook] ✅ 推送成功 (${resp.status})`);
+    }
+  } catch (err) {
+    console.error(`[Webhook] ❌ 推送失败: ${err.message}`);
+  }
+}
+
 // ======== 状态文件管理 ========
 
 function loadState() {
@@ -352,6 +422,9 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookArg = args.find(a => a.startsWith('--webhook='));
+  const webhookUrl = webhookArg ? webhookArg.split('=')[1] : null;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
@@ -378,10 +451,25 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
+  // --notify: 只输出简洁通知行
+  if (notifyMode) {
+    const line = buildNotifyLine(result);
+    if (line) console.log(line);
+  }
+
+  // --webhook=<url>: POST 到外部服务
+  if (webhookUrl) {
+    await postWebhook(webhookUrl, result);
+  }
+
+  // 输出报告（--notify 时也输出完整报告，方便日志）
+  if (jsonMode && !notifyMode) {
     console.log(JSON.stringify(result, null, 2));
-  } else {
+  } else if (!jsonMode && !notifyMode) {
     console.log(result.report);
+  } else if (notifyMode && jsonMode) {
+    // --notify --json：只输出 JSON，不重复
+    console.log(JSON.stringify(result, null, 2));
   }
 }
 
