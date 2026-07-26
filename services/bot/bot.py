@@ -973,16 +973,30 @@ class OkxTradingBot:
                         for pct in tp_pcts:
                             tp_margins.append(round(margin_val * pct / 100.0, 2))
 
+                        # OKX 風格專業欄位計算
+                        MMR = 0.005  # 維持保證金率 (0.5%)
+                        FEE_RATE = 0.0005  # 交易手續費率 (0.05%)
+                        if side == "long":
+                            liquidation_price = entry_price * (1 - 1/leverage_val + MMR)
+                            break_even_price = entry_price * (1 + FEE_RATE * 2)
+                        else:
+                            liquidation_price = entry_price * (1 + 1/leverage_val - MMR)
+                            break_even_price = entry_price * (1 - FEE_RATE * 2)
+                        maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
+
                         positions_list.append({
                             "symbol": sym,
                             "side": side,
                             "size": abs(pos_qty),
                             "entry_price": entry_price,
                             "current_price": round(current_price, 8),
+                            "liquidation_price": round(liquidation_price, 8) if leverage_val > 0 else None,
+                            "break_even_price": round(break_even_price, 8) if entry_price > 0 else None,
                             "pnl": round(pnl, 2),
                             "pnl_pct": round(pnl_pct, 2),
                             "leverage": leverage_val,
                             "margin": round(margin_val, 2),
+                            "maintenance_margin_rate": maintenance_margin_rate,
                             "tp_prices": tp_prices,
                             "tp_status": tp_status,
                             "tp_pnl": tp_pnl,
@@ -1095,16 +1109,30 @@ class OkxTradingBot:
                     for pct in tp_pcts:
                         tp_margins.append(round(margin_val * pct / 100.0, 2))
 
+                    # OKX 風格專業欄位計算
+                    MMR = 0.005  # 維持保證金率 (0.5%)
+                    FEE_RATE = 0.0005  # 交易手續費率 (0.05%)
+                    if side == "long":
+                        liquidation_price = entry_price * (1 - 1/leverage_val + MMR)
+                        break_even_price = entry_price * (1 + FEE_RATE * 2)
+                    else:
+                        liquidation_price = entry_price * (1 + 1/leverage_val - MMR)
+                        break_even_price = entry_price * (1 - FEE_RATE * 2)
+                    maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
+
                     positions_list.append({
                         "symbol": sym,
                         "side": side,
                         "size": abs(pos_qty),
                         "entry_price": entry_price,
                         "current_price": round(current_price, 8),
+                        "liquidation_price": round(liquidation_price, 8) if leverage_val > 0 else None,
+                        "break_even_price": round(break_even_price, 8) if entry_price > 0 else None,
                         "pnl": round(pnl, 2),
                         "pnl_pct": round(pnl_pct, 2),
                         "leverage": leverage_val,
                         "margin": round(margin_val, 2),
+                        "maintenance_margin_rate": maintenance_margin_rate,
                         "tp_prices": tp_prices,
                         "tp_status": tp_status,
                         "tp_pnl": tp_pnl,
