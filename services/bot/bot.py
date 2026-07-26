@@ -890,6 +890,7 @@ class OkxTradingBot:
                         "current_price": round(current_price, 8),
                         "pnl": round(pnl, 2),
                         "pnl_pct": round(pnl_pct, 2),
+                        "leverage": self.config.get("default_leverage", 1),
                     })
 
             recent = self._signal_queue[-50:]

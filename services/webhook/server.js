@@ -385,6 +385,7 @@ app.get('/api/status', async (_req, res) => {
       current_price: p.current_price != null ? p.current_price : null,
       pnl: p.pnl != null ? p.pnl : null,
       pnl_pct: p.pnl_pct != null ? p.pnl_pct : null,
+      leverage: p.leverage != null ? p.leverage : null,
     }));
   } else {
     // 降級：使用 Webhook 本地的模擬持倉
@@ -966,7 +967,7 @@ function renderPositions(d) {
   if (positions.length === 0) {
     html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div>';
   } else {
-    html += '<table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>入場價</th><th>現價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
+    html += '<table class="signal-table"><thead><tr><th>交易對</th><th>方向</th><th>數量</th><th>槓桿</th><th>入場價</th><th>現價</th><th>盈虧</th><th>盈虧%</th></tr></thead><tbody>';
     for (const p of positions) {
       const sideColor = p.side === 'long' ? '#3fb950' : '#f85149';
       const sideLabel = p.side === 'long' ? '📈 多頭' : '📉 空頭';
@@ -998,10 +999,17 @@ function renderPositions(d) {
         entryStr = '$' + parseFloat(p.entry_price).toFixed(p.entry_price < 1 ? 6 : 2);
       }
 
+      // 槓桿顯示
+      let leverageStr = '—';
+      if (p.leverage != null) {
+        leverageStr = p.leverage + 'x';
+      }
+
       html += '<tr>' +
         '<td><strong>' + esc(p.symbol) + '</strong></td>' +
         '<td><span style="color:' + sideColor + ';font-weight:600">' + sideLabel + '</span></td>' +
         '<td>' + p.size + '</td>' +
+        '<td>' + leverageStr + '</td>' +
         '<td style="font-size:12px">' + entryStr + '</td>' +
         '<td style="font-size:12px">' + priceStr + '</td>' +
         '<td style="color:' + pnlColor + ';font-weight:600">' + pnlStr + '</td>' +
