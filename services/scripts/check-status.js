@@ -3,14 +3,25 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                                   # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                            # JSON 格式输出
+ *   node scripts/check-status.js --save-state                      # 保存状态，增量对比
+ *   node scripts/check-status.js --notify                          # 单行简洁通知
+ *   node scripts/check-status.js --webhook                         # Slack/Discord 兼容 JSON
+ *   node scripts/check-status.js --webhook-url=https://...         # POST 到外部 Webhook
+ *   node scripts/check-status.js --full                            # save-state + notify
+ *
+ * 快捷方式（npm scripts）：
+ *   npm run check          # 标准输出
+ *   npm run check:save     # 保存状态
+ *   npm run check:notify   # 简洁通知
+ *   npm run check:webhook  # Webhook JSON
+ *   npm run check:full     # 完整模式
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
- *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state >> /var/log/bot-check.log 2>&1
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -24,6 +35,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const API_URL = process.env.API_URL || 'http://43.133.210.83:3000';
 const TIMEOUT = 10000; // 10s
 const STATE_FILE = join(__dirname, '..', '.check-state.json');
+
+// Webhook 通知配置
+const WEBHOOK_USERNAME = 'LE VAN DO® Bot Monitor';
+const WEBHOOK_AVATAR = 'https://img.icons8.com/color/48/bot--v1.png';
 
 // ======== 辅助函数 ========
 
@@ -188,7 +203,7 @@ export async function checkStatus(options = {}) {
     if (diff > 0) {
       lines.push(`  📊 累计信号: ${BOLD}${total}${RESET} 条 ${CYAN}(较上次 +${diff} 条)${RESET}`);
     } else if (diff === 0) {
-      lines.push(`  📊 累计信号: ${total} 条 ${GRAY}(与上次相同)${RESET}`);
+      lines.push(`  📊 累计信号: ${total} 条 ${GRAY}(无新信号)${RESET}`);
     } else {
       lines.push(`  📊 累计信号: ${total} 条 ${GRAY}(上次记录为 ${prevTotal})${RESET}`);
     }
@@ -293,11 +308,16 @@ export async function checkStatus(options = {}) {
     if (total > 0) {
       const lastSignal = recent.length > 0 ? recent[0] : null;
       if (lastSignal) {
-        lines.push(`    最新信号: ${lastSignal.type} @ ${lastSignal.symbol}${lastSignal.price ? ` ($${lastSignal.price})` : ''} — ${fmtTime(lastSignal.time)}`);
-        lines.push(`    累计信号: ${total} 条`);
+        // 判断是否有新信号
+        if (prevTotal !== undefined && total === prevTotal) {
+          lines.push(`    📭 无新信号 — 上次检查后无新增信号 (累计 ${total} 条)`);
+        } else {
+          lines.push(`    最新信号: ${lastSignal.type} @ ${lastSignal.symbol}${lastSignal.price ? ` ($${lastSignal.price})` : ''} — ${fmtTime(lastSignal.time)}`);
+          lines.push(`    累计信号: ${total} 条`);
+        }
       }
     } else {
-      lines.push(`    无新信号 — 系统等待策略触发`);
+      lines.push(`    📭 无新信号 — 系统等待策略触发`);
     }
   } else {
     lines.push(`  ${BOLD}⚠️ 结论: 系统存在异常${RESET}`);
@@ -344,6 +364,207 @@ function saveState(data) {
   }
 }
 
+// ======== Webhook/通知工具函数 ========
+
+/**
+ * 生成一行简洁通知文本（用于推送通知）
+ */
+function formatNotifyLine(result) {
+  const s = result.summary;
+  if (!result.success) {
+    return `❌ LE VAN DO® 检查失败: ${result.error}`;
+  }
+
+  const data = result.data;
+  const processesOnline = data.processes.every(p => p.status === 'online');
+  const exchangeOnline = data.exchange.status === 'connected';
+
+  let header = '';
+  if (!processesOnline || !exchangeOnline) {
+    header = '⚠️ 系统异常';
+  } else if (s.newSignals > 0) {
+    header = `📡 ${s.newSignals} 个新信号`;
+  } else if (s.totalSignals > 0) {
+    header = '✅ 无新信号';
+  } else {
+    header = '🟢 运行正常';
+  }
+
+  const sigInfo = s.totalSignals > 0 ? `${s.totalSignals} 条累计` : '0 条信号';
+  const procInfo = processesOnline ? '进程正常' : '进程异常';
+  const exInfo = exchangeOnline ? '已连接' : '已断开';
+  const memPct = data.system?.memory?.usagePercent ?? 0;
+  const memIcon = memPct > 80 ? '🔴' : memPct > 60 ? '🟡' : '🟢';
+
+  const recent = s.recentSignals?.[0];
+  let recentStr = '';
+  if (recent) {
+    recentStr = ` | 最近: ${recent.type} ${recent.symbol}${recent.price ? ` $${parseFloat(recent.price).toFixed(2)}` : ''}`;
+  } else if (s.totalSignals === 0) {
+    recentStr = ' | 暂无信号';
+  }
+
+  return `${header} | ${sigInfo} | ${procInfo} | ${exInfo} | ${memIcon} MEM ${memPct}%${recentStr}`;
+}
+
+/**
+ * 生成 Slack/Discord 兼容的 Webhook JSON payload
+ */
+function formatWebhookPayload(result) {
+  const s = result.summary;
+  const data = result.data;
+  const processesOnline = data.processes?.every?.(p => p.status === 'online') ?? false;
+  const exchangeOnline = data.exchange?.status === 'connected';
+  const sys = data.system;
+
+  // 状态颜色
+  let color = '#3fb950'; // green
+  let statusEmoji = '✅';
+  let statusTitle = '系统运行正常';
+
+  if (!processesOnline || !exchangeOnline) {
+    color = '#f85149'; // red
+    statusEmoji = '🚨';
+    statusTitle = '系统异常';
+  } else if (s.newSignals > 0) {
+    color = '#58a6ff'; // blue
+    statusEmoji = '📡';
+    statusTitle = `发现 ${s.newSignals} 个新信号`;
+  } else if (s.totalSignals > 0) {
+    color = '#d29922'; // yellow
+    statusEmoji = '🔁';
+    statusTitle = '无新信号';
+  }
+
+  // 构建字段
+  const fields = [];
+
+  // 信号统计
+  fields.push({
+    name: '📊 信号统计',
+    value: `累计: **${s.totalSignals}** 条${s.newSignals !== null ? ` (较上次 **${s.newSignals > 0 ? `+${s.newSignals}` : s.newSignals}** 条)` : ''}`,
+    inline: false,
+  });
+
+  const counts = data.signals?.counts || {};
+  fields.push({
+    name: '📗 longE',
+    value: `${counts.longE || 0}`,
+    inline: true,
+  });
+  fields.push({
+    name: '📕 shortE',
+    value: `${counts.shortE || 0}`,
+    inline: true,
+  });
+  fields.push({
+    name: '📘 longX',
+    value: `${counts.longX || 0}`,
+    inline: true,
+  });
+  fields.push({
+    name: '📙 shortX',
+    value: `${counts.shortX || 0}`,
+    inline: true,
+  });
+
+  // 最近信号
+  const recent = s.recentSignals?.slice(0, 5) || [];
+  if (recent.length > 0) {
+    const sigLines = recent.map(r => {
+      const priceStr = r.price ? ` $${parseFloat(r.price).toFixed(r.price < 1 ? 6 : 2)}` : '';
+      return `\`${r.time.slice(11, 19)}\` **${r.type}** \`${r.symbol}\`${priceStr}`;
+    }).join('\n');
+    fields.push({
+      name: '📡 最近信号',
+      value: sigLines,
+      inline: false,
+    });
+  }
+
+  // 进程状态
+  const procLines = (data.processes || []).map(p => {
+    const statusIcon = p.status === 'online' ? '🟢' : '🔴';
+    return `${statusIcon} **${p.name}** — CPU ${p.cpu}% / MEM ${fmtBytes(p.memory)} / 运行 ${p.uptime}`;
+  }).join('\n');
+  if (procLines) {
+    fields.push({
+      name: '⚙️ 进程',
+      value: procLines,
+      inline: false,
+    });
+  }
+
+  // 系统资源
+  let sysText = '';
+  if (sys) {
+    const memColor = sys.memory.usagePercent > 80 ? '🔴' : sys.memory.usagePercent > 60 ? '🟡' : '🟢';
+    const diskColor = sys.disk.usagePercent > 80 ? '🔴' : sys.disk.usagePercent > 60 ? '🟡' : '🟢';
+    sysText += `${memColor} 内存: ${sys.memory.usagePercent}% (${fmtBytes(sys.memory.used)} / ${fmtBytes(sys.memory.total)})\n`;
+    sysText += `${diskColor} 磁盘: ${sys.disk.usagePercent}% (${fmtBytes(sys.disk.used)} / ${fmtBytes(sys.disk.total)})\n`;
+    sysText += `🖥️ CPU: ${sys.cpu.cores} 核 · 负载 ${sys.cpu.loadAvg.join('/')}`;
+  }
+  if (sysText) {
+    fields.push({
+      name: '🖥️ 资源',
+      value: sysText,
+      inline: false,
+    });
+  }
+
+  // 交易所状态
+  const ex = data.exchange;
+  if (ex) {
+    fields.push({
+      name: '🔗 交易所',
+      value: `${ex.network} (${ex.isTestnet ? '测试网' : '实盘'}) · ${ex.dryRun ? '🟢 模拟' : '🔴 实盘'} · ${ex.leverage}x · ${ex.positionMode}`,
+      inline: false,
+    });
+  }
+
+  const payload = {
+    username: WEBHOOK_USERNAME,
+    icon_url: WEBHOOK_AVATAR,
+    attachments: [
+      {
+        fallback: `LE VAN DO® ${statusTitle}`,
+        color,
+        title: `${statusEmoji} LE VAN DO® 交易机器人状态 — ${statusTitle}`,
+        title_link: result.serverUrl,
+        fields,
+        footer: `服务器: ${result.serverUrl}`,
+        ts: Math.floor(Date.now() / 1000),
+      },
+    ],
+  };
+
+  return payload;
+}
+
+/**
+ * 发送 Webhook POST 请求
+ */
+async function postWebhook(url, payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+    return true;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
 // ======== CLI 入口 ========
 
 async function main() {
@@ -352,10 +573,19 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : null;
+  const fullMode = args.includes('--full');
+
+  // 推导模式：--full = --save-state + --notify
+  const effectiveSaveState = saveStateFlag || fullMode;
+  const effectiveNotify = notifyMode || fullMode;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
-  if (saveStateFlag) {
+  if (effectiveSaveState) {
     const state = loadState();
     prevTotal = state.totalSignals;
   }
@@ -363,12 +593,38 @@ async function main() {
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
-    console.error(`\n❌ ${result.error}\n`);
+    const errMsg = `\n❌ ${result.error}\n`;
+    console.error(errMsg);
+
+    // --notify 模式下出错也要生成通知
+    if (effectiveNotify) {
+      process.stdout.write(`❌ LE VAN DO® 检查失败: ${result.error}\n`);
+    }
+    if (webhookUrl) {
+      const payload = {
+        username: WEBHOOK_USERNAME,
+        icon_url: WEBHOOK_AVATAR,
+        attachments: [{
+          fallback: `LE VAN DO® 检查失败`,
+          color: '#f85149',
+          title: `🚨 LE VAN DO® 检查失败`,
+          fields: [{ name: '错误', value: result.error, inline: false }],
+          footer: `服务器: ${result.serverUrl}`,
+          ts: Math.floor(Date.now() / 1000),
+        }],
+      };
+      try {
+        await postWebhook(webhookUrl, payload);
+      } catch (postErr) {
+        console.error(`[Webhook] ⚠️ POST 失败: ${postErr.message}`);
+      }
+    }
+
     process.exit(1);
   }
 
   // 保存当前状态
-  if (saveStateFlag && result.summary) {
+  if (effectiveSaveState && result.summary) {
     saveState({
       lastCheck: new Date().toISOString(),
       totalSignals: result.summary.totalSignals,
@@ -378,9 +634,35 @@ async function main() {
     });
   }
 
+  // --notify: 输出单行简洁通知
+  if (effectiveNotify) {
+    process.stdout.write(formatNotifyLine(result) + '\n');
+  }
+
+  // --webhook: 输出 Slack/Discord 兼容 JSON 到 stdout
+  if (webhookMode) {
+    const payload = formatWebhookPayload(result);
+    process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+  }
+
+  // --webhook-url=URL: POST 到外部 Webhook
+  if (webhookUrl) {
+    const payload = formatWebhookPayload(result);
+    try {
+      await postWebhook(webhookUrl, payload);
+      console.error(`[Webhook] ✅ 通知已发送到 ${webhookUrl}`);
+    } catch (postErr) {
+      console.error(`[Webhook] ⚠️ POST 失败: ${postErr.message}`);
+    }
+  }
+
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
-  } else {
+  } else if (!effectiveNotify && !webhookMode && !webhookUrl) {
+    // 默认模式：输出完整报告
+    console.log(result.report);
+  } else if (effectiveNotify && result.summary?.newSignals > 0) {
+    // --notify 模式下如果有新信号，也输出完整报告
     console.log(result.report);
   }
 }
