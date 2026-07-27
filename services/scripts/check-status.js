@@ -3,14 +3,18 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                       # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                # JSON 格式输出
+ *   node scripts/check-status.js --save-state          # 自动保存状态到文件
+ *   node scripts/check-status.js --notify              # 单行简洁通知（适合推送）
+ *   node scripts/check-status.js --webhook             # 输出 Slack/Discord 兼容 JSON payload
+ *   node scripts/check-status.js --webhook-url=URL     # POST 报告到外部 Webhook URL
+ *   node scripts/check-status.js --full                # 同时保存状态并输出通知（cron 推荐）
  *
- * 定时任务（每 15 分钟）：
+ * 定时任务（每 15 分钟，推荐）：
  *   crontab -e
- *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --full >> /var/log/bot-check.log 2>&1
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -293,11 +297,20 @@ export async function checkStatus(options = {}) {
     if (total > 0) {
       const lastSignal = recent.length > 0 ? recent[0] : null;
       if (lastSignal) {
+        // 检查是否有增量
+        if (prevTotal !== undefined) {
+          const diff = total - prevTotal;
+          if (diff > 0) {
+            lines.push(`    📢 自上次检查以来有 ${BOLD}${diff}${RESET} 条新信号`);
+          } else {
+            lines.push(`    ℹ️ 无新信号 — 累计 ${total} 条`);
+          }
+        }
         lines.push(`    最新信号: ${lastSignal.type} @ ${lastSignal.symbol}${lastSignal.price ? ` ($${lastSignal.price})` : ''} — ${fmtTime(lastSignal.time)}`);
         lines.push(`    累计信号: ${total} 条`);
       }
     } else {
-      lines.push(`    无新信号 — 系统等待策略触发`);
+      lines.push(`    ℹ️ 无任何信号记录 — 系统等待策略触发`);
     }
   } else {
     lines.push(`  ${BOLD}⚠️ 结论: 系统存在异常${RESET}`);
@@ -323,6 +336,175 @@ export async function checkStatus(options = {}) {
     },
     serverUrl: url,
   };
+}
+
+// ======== 通知生成 ========
+
+/**
+ * 生成单行简洁通知（适合推送/通知栏）
+ */
+function generateNotifyLine(result) {
+  const s = result.summary;
+  if (!result.success) {
+    return `❌ LE VAN DO® 检查失败: ${result.error}`;
+  }
+
+  const newSignals = s.newSignals;
+  const parts = [];
+
+  // 信号状态
+  if (newSignals !== null && newSignals > 0) {
+    parts.push(`📡 +${newSignals} 新信号 (共 ${s.totalSignals})`);
+    // 附加最近信号摘要
+    const recent = s.recentSignals || [];
+    if (recent.length > 0) {
+      const latest = recent[0];
+      const signalLabels = { longE: '📗多开', shortE: '📕空开', longX: '📘多平', shortX: '📙空平' };
+      const label = signalLabels[latest.type] || latest.type;
+      parts.push(`${label} ${latest.symbol}`);
+    }
+  } else if (newSignals !== null && newSignals === 0) {
+    parts.push(`📡 无新信号 (共 ${s.totalSignals})`);
+  } else {
+    parts.push(`📡 信号共 ${s.totalSignals}`);
+  }
+
+  // 进程状态
+  parts.push(s.processesOnline ? '✅ 进程正常' : '⚠️ 进程异常');
+
+  // 交易所
+  parts.push(s.exchangeOnline ? '🔗 已连接' : '🔗 已断开');
+
+  // 系统
+  parts.push(s.systemHealthy ? '🖥️ 系统正常' : '⚠️ 系统高负载');
+
+  return `LE VAN DO® | ${parts.join(' · ')}`;
+}
+
+/**
+ * 生成 Slack/Discord 兼容的 Webhook JSON payload
+ */
+function generateWebhookPayload(result) {
+  const s = result.summary;
+  const data = result.data;
+
+  if (!result.success) {
+    return {
+      text: `❌ LE VAN DO® 检查失败`,
+      attachments: [{
+        color: 'danger',
+        title: '连接错误',
+        text: result.error,
+        ts: Math.floor(Date.now() / 1000),
+      }],
+    };
+  }
+
+  const newSignals = s.newSignals;
+  let color = 'good'; // green
+  let title = '✅ 系统运行正常';
+  let fields = [];
+
+  // 信号
+  const counts = data.signals.counts || {};
+  const signalInfo = `📗 ${counts.longE || 0} · 📕 ${counts.shortE || 0} · 📘 ${counts.longX || 0} · 📙 ${counts.shortX || 0}`;
+
+  if (newSignals !== null && newSignals > 0) {
+    color = '#3fb950';
+    title = `📡 +${newSignals} 新信号 (共 ${s.totalSignals})`;
+  } else if (newSignals !== null && newSignals === 0) {
+    title = `📡 无新信号 (共 ${s.totalSignals})`;
+  }
+
+  if (!s.processesOnline || !s.exchangeOnline) {
+    color = 'danger';
+    title = '⚠️ 系统异常';
+  } else if (!s.systemHealthy) {
+    color = 'warning';
+    title = '⚠️ 系统负载较高';
+  }
+
+  fields.push({
+    title: '信号统计',
+    value: `累计: **${s.totalSignals}** 条\n${signalInfo}`,
+    short: true,
+  });
+
+  fields.push({
+    title: '进程状态',
+    value: s.processesOnline ? '✅ 所有进程正常运行' : '❌ 部分进程异常',
+    short: true,
+  });
+
+  fields.push({
+    title: '交易所',
+    value: s.exchangeOnline ? '✅ 已连接' : '❌ 已断开',
+    short: true,
+  });
+
+  fields.push({
+    title: '系统健康',
+    value: s.systemHealthy ? '✅ 正常' : '⚠️ 需要关注',
+    short: true,
+  });
+
+  // 最近信号
+  const recent = s.recentSignals || [];
+  if (recent.length > 0) {
+    const signalLabels = { longE: '📗', shortE: '📕', longX: '📘', shortX: '📙' };
+    const recentText = recent.slice(0, 5).map(r =>
+      `${signalLabels[r.type] || r.type} ${r.symbol}${r.price ? ` $${r.price}` : ''}`
+    ).join('\n');
+    fields.push({
+      title: `最近信号 (最新 ${Math.min(recent.length, 5)} 条)`,
+      value: recentText || '—',
+      short: false,
+    });
+  }
+
+  // 系统资源
+  if (data.system) {
+    const sys = data.system;
+    const memPct = sys.memory.usagePercent;
+    const diskPct = sys.disk.usagePercent;
+    const cpuLoad = sys.cpu.loadAvg[0];
+    fields.push({
+      title: '系统资源',
+      value: `内存: ${memPct}% · 磁盘: ${diskPct}% · CPU 负载: ${cpuLoad}`,
+      short: false,
+    });
+  }
+
+  return {
+    text: `LE VAN DO® 状态报告 — ${title}`,
+    attachments: [{
+      color,
+      title,
+      fields,
+      footer: 'LE VAN DO® Bot Check',
+      ts: Math.floor(Date.now() / 1000),
+    }],
+  };
+}
+
+/**
+ * 发送 Webhook POST 请求到指定 URL
+ */
+async function postWebhook(url, payload) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return { success: resp.ok, status: resp.status };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
 
 // ======== 状态文件管理 ========
@@ -352,10 +534,20 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : null;
+  const fullMode = args.includes('--full');
+
+  // --full 模式 = --save-state + --notify
+  const effectiveSaveState = saveStateFlag || fullMode;
+  const effectiveNotify = notifyMode || fullMode;
+  const hasWebhookOutput = webhookMode || !!webhookUrl;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
-  if (saveStateFlag) {
+  if (effectiveSaveState) {
     const state = loadState();
     prevTotal = state.totalSignals;
   }
@@ -363,12 +555,21 @@ async function main() {
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
+    if (hasWebhookOutput && webhookUrl) {
+      const payload = generateWebhookPayload(result);
+      const wr = await postWebhook(webhookUrl, payload);
+      if (wr.success) {
+        console.error(`[Webhook] ✅ 错误通知已发送 (HTTP ${wr.status})`);
+      } else {
+        console.error(`[Webhook] ❌ 发送失败: ${wr.error}`);
+      }
+    }
     console.error(`\n❌ ${result.error}\n`);
     process.exit(1);
   }
 
   // 保存当前状态
-  if (saveStateFlag && result.summary) {
+  if (effectiveSaveState && result.summary) {
     saveState({
       lastCheck: new Date().toISOString(),
       totalSignals: result.summary.totalSignals,
@@ -378,9 +579,63 @@ async function main() {
     });
   }
 
+  // ---- 输出模式 ----
+
   if (jsonMode) {
+    // 标准 JSON 输出
     console.log(JSON.stringify(result, null, 2));
+  } else if (effectiveNotify) {
+    // 通知模式：输出单行简洁通知
+    const notifyLine = generateNotifyLine(result);
+    console.log(notifyLine);
+
+    // 如果有新信号，附加最近信号详情
+    const newSignals = result.summary?.newSignals;
+    if (newSignals !== null && newSignals > 0) {
+      const recent = result.summary?.recentSignals || [];
+      if (recent.length > 0) {
+        const signalLabels = { longE: '📗 多头开仓', shortE: '📕 空头开仓', longX: '📘 多头平仓', shortX: '📙 空头平仓' };
+        for (const r of recent) {
+          const label = signalLabels[r.type] || r.type;
+          const price = r.price ? ` @ $${r.price}` : '';
+          console.log(`  ${label} ${r.symbol}${price} — ${fmtTime(r.time)}`);
+        }
+      }
+    }
+
+    // 如果系统异常，附上完整报告
+    if (!result.summary?.processesOnline || !result.summary?.exchangeOnline || !result.summary?.systemHealthy) {
+      console.log('');
+      console.log('⚠️ 系统存在异常，详细报告：');
+      console.log(result.report);
+    }
+
+    // 无新信号时明确报告
+    if (newSignals !== null && newSignals === 0 && result.summary?.totalSignals === 0) {
+      console.log('  ℹ️ 无任何信号记录 — 系统等待策略触发');
+    } else if (newSignals !== null && newSignals === 0 && result.summary?.totalSignals > 0) {
+      console.log('  ℹ️ 无新信号产生 — 上次检查后无变化');
+    }
+
+  } else if (hasWebhookOutput) {
+    // Webhook 模式
+    const payload = generateWebhookPayload(result);
+
+    if (webhookUrl) {
+      // POST 到远程 Webhook URL
+      const wr = await postWebhook(webhookUrl, payload);
+      if (wr.success) {
+        console.log(`[Webhook] ✅ 报告已发送 (HTTP ${wr.status})`);
+      } else {
+        console.error(`[Webhook] ❌ 发送失败: ${wr.error}`);
+        process.exit(1);
+      }
+    } else {
+      // 输出 JSON payload 到 stdout（供管道使用）
+      console.log(JSON.stringify(payload, null, 2));
+    }
   } else {
+    // 默认：完整报告
     console.log(result.report);
   }
 }
