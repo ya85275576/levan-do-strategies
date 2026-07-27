@@ -3,14 +3,18 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                         # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                  # JSON 格式输出
+ *   node scripts/check-status.js --save-state            # 自动保存状态到文件
+ *   node scripts/check-status.js --notify                # 单行简洁通知输出
+ *   node scripts/check-status.js --webhook               # 输出 Slack/Discord 兼容 JSON
+ *   node scripts/check-status.js --webhook-url=URL       # POST 结果到外部 Webhook
+ *   node scripts/check-status.js --full                  # save-state + notify
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
- *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --full
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -307,15 +311,59 @@ export async function checkStatus(options = {}) {
   lines.push(subDivider);
   lines.push('');
 
+  // ---- 构建通知文本（--notify 模式使用） ----
+  const newSignals = prevTotal !== undefined ? total - prevTotal : null;
+  const recentStr = recent.length > 0
+    ? `${recent[0].type} ${recent[0].symbol}${recent[0].price ? ' $' + parseFloat(recent[0].price).toFixed(2) : ''}`
+    : '暂无';
+  const processStatus = processHealthy ? '✅ 正常运行' : '⚠️ 异常';
+  const exchangeStatusTxt = exchangeHealthy ? '✅ 已连接' : '❌ 断开';
+
+  let notifyLine;
+  if (newSignals !== null && newSignals > 0) {
+    notifyLine = `📡 LE VAN DO® 信号报告 | 新信号 +${newSignals} | 累计 ${total} | 最新: ${recentStr} | 进程 ${processStatus} | 交易所 ${exchangeStatusTxt}`;
+  } else if (newSignals !== null && newSignals === 0) {
+    notifyLine = `📡 LE VAN DO® 信号报告 | 无新信号 (累计 ${total}) | 进程 ${processStatus} | 交易所 ${exchangeStatusTxt}`;
+  } else {
+    notifyLine = `📡 LE VAN DO® 信号报告 | 累计 ${total} 条信号 | 最新: ${recentStr} | 进程 ${processStatus} | 交易所 ${exchangeStatusTxt}`;
+  }
+
+  // ---- 构建 Webhook JSON payload ----
+  const webhookPayload = {
+    text: notifyLine,
+    username: 'LE VAN DO® Bot',
+    icon_emoji: ':robot_face:',
+    attachments: [
+      {
+        color: (processHealthy && exchangeHealthy) ? '#3fb950' : '#f85149',
+        title: 'LE VAN DO® — OKX 交易机器人状态报告',
+        fields: [
+          { title: '检查时间', value: fmtTime(now), short: true },
+          { title: '服务器', value: url, short: true },
+          { title: '信号总数', value: String(total), short: true },
+          { title: '新增信号', value: newSignals !== null ? String(newSignals) : '首次检查', short: true },
+          { title: '进程状态', value: processStatus, short: true },
+          { title: '交易所', value: exchangeStatusTxt, short: true },
+          { title: '最新信号', value: recentStr, short: false },
+          { title: '系统健康', value: allHealthy ? '✅ 正常' : '⚠️ 需要关注', short: true },
+        ],
+        footer: 'LE VAN DO® Bot Check',
+        ts: Math.floor(Date.now() / 1000),
+      },
+    ],
+  };
+
   return {
     success: true,
     data,
     report: lines.join('\n'),
+    notify: notifyLine,
+    webhookPayload,
     summary: {
       timestamp: now,
       totalSignals: total,
       prevTotal,
-      newSignals: prevTotal !== undefined ? total - prevTotal : null,
+      newSignals,
       processesOnline: processHealthy,
       exchangeOnline: exchangeHealthy,
       systemHealthy: allHealthy,
@@ -352,23 +400,44 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyFlag = args.includes('--notify');
+  const webhookFlag = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : null;
+  const fullFlag = args.includes('--full');
+
+  // --full 等价于 --save-state + --notify
+  const effectiveSaveState = saveStateFlag || fullFlag;
+  const effectiveNotify = notifyFlag || fullFlag;
+  const effectiveWebhook = webhookFlag || (webhookUrl !== null);
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
-  if (saveStateFlag) {
-    const state = loadState();
-    prevTotal = state.totalSignals;
+  let prevState = {};
+  if (effectiveSaveState) {
+    prevState = loadState();
+    prevTotal = prevState.totalSignals;
   }
 
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
-    console.error(`\n❌ ${result.error}\n`);
+    // 错误时也输出简洁通知
+    const errMsg = `❌ LE VAN DO® 检查失败: ${result.error}`;
+    if (effectiveNotify) {
+      console.log(errMsg);
+    }
+    if (effectiveWebhook && webhookUrl) {
+      await postWebhook(webhookUrl, { text: errMsg });
+    }
+    if (!effectiveNotify && !effectiveWebhook) {
+      console.error(`\n${errMsg}\n`);
+    }
     process.exit(1);
   }
 
   // 保存当前状态
-  if (saveStateFlag && result.summary) {
+  if (effectiveSaveState && result.summary) {
     saveState({
       lastCheck: new Date().toISOString(),
       totalSignals: result.summary.totalSignals,
@@ -378,10 +447,43 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
-    console.log(JSON.stringify(result, null, 2));
+  // Webhook 优先发送（无论哪种模式，webhook-url 都发送）
+  if (webhookUrl) {
+    await postWebhook(webhookUrl, result.webhookPayload);
+  }
+
+  // 决定主要输出
+  const primaryOutput = effectiveNotify ? result.notify
+    : jsonMode ? JSON.stringify(result, null, 2)
+    : result.report;
+
+  if (webhookFlag && !webhookUrl) {
+    // 纯 --webhook 模式：仅输出 JSON payload 到 stdout（便于 pipe）
+    console.log(JSON.stringify(result.webhookPayload));
   } else {
-    console.log(result.report);
+    // 其他模式：输出人类可读内容
+    console.log(primaryOutput);
+  }
+}
+
+// ======== Webhook POST 辅助 ========
+
+async function postWebhook(url, payload) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      console.error(`[Webhook POST] ⚠️ HTTP ${resp.status}: ${resp.statusText}`);
+    }
+  } catch (err) {
+    console.error(`[Webhook POST] ❌ 发送失败: ${err.message}`);
   }
 }
 
