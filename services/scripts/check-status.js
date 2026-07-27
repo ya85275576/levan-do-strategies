@@ -3,10 +3,14 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                          # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                   # JSON 格式输出
+ *   node scripts/check-status.js --save-state             # 增量对比，自动保存状态
+ *   node scripts/check-status.js --notify                 # 单行简洁通知（适合日志）
+ *   node scripts/check-status.js --webhook                # 输出 Webhook JSON payload 到 stdout
+ *   node scripts/check-status.js --webhook-url=https://... # POST Webhook payload 到外部 URL
+ *   node scripts/check-status.js --save-state --notify    # 增量对比 + 简洁通知
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
@@ -17,6 +21,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -90,6 +95,157 @@ const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const CYAN = '\x1b[36m';
 const GRAY = '\x1b[90m';
+
+// ======== 构建 Webhook Payload ========
+
+function buildWebhookPayload(result, data) {
+  const sys = data.system || {};
+  const processes = data.processes || [];
+  const allOnline = processes.every(p => p.status === 'online');
+  const exchangeConnected = data.exchange && data.exchange.status === 'connected';
+
+  const payload = {
+    id: randomUUID(),
+    event: 'bot_status_check',
+    timestamp: new Date().toISOString(),
+    server: {
+      url: result.serverUrl,
+      uptime: data.server?.uptime || 'unknown',
+      hostname: sys.hostname || 'unknown',
+    },
+    processes: processes.map(p => ({
+      name: p.name,
+      status: p.status,
+      pid: p.pid,
+      uptime: p.uptime,
+      restartCount: p.restartCount,
+      cpu: p.cpu,
+      memory: p.memory,
+    })),
+    exchange: data.exchange ? {
+      name: data.exchange.name,
+      network: data.exchange.network,
+      isTestnet: data.exchange.isTestnet,
+      dryRun: data.exchange.dryRun,
+      status: data.exchange.status,
+      accountStatus: data.exchange.accountStatus,
+      leverage: data.exchange.leverage,
+    } : null,
+    signals: {
+      total: data.signals?.total || 0,
+      newSinceLastCheck: result.summary?.newSignals ?? null,
+      counts: data.signals?.counts || { longE: 0, shortE: 0, longX: 0, shortX: 0 },
+      recent: (data.signals?.recent || []).slice(0, 5).map(s => ({
+        time: s.time,
+        type: s.type,
+        symbol: s.symbol,
+        price: s.price,
+      })),
+    },
+    positions: (data.positions || []).map(p => ({
+      symbol: p.symbol,
+      side: p.side,
+      size: p.size,
+      price: p.price,
+    })),
+    equity: data.equity || {},
+    system: {
+      memory: sys.memory ? {
+        total: sys.memory.total,
+        used: sys.memory.used,
+        usagePercent: sys.memory.usagePercent,
+      } : null,
+      disk: sys.disk ? {
+        total: sys.disk.total,
+        used: sys.disk.used,
+        usagePercent: sys.disk.usagePercent,
+      } : null,
+      cpu: sys.cpu ? {
+        cores: sys.cpu.cores,
+        loadAvg: sys.cpu.loadAvg,
+      } : null,
+    },
+    healthy: {
+      all: allOnline && exchangeConnected && (!sys.memory || sys.memory.usagePercent < 80),
+      processes: allOnline,
+      exchange: exchangeConnected,
+      system: !sys.memory || sys.memory.usagePercent < 80,
+    },
+  };
+
+  return payload;
+}
+
+// ======== 主检查逻辑 ========
+
+// ======== 发送 Webhook 到外部 URL ========
+
+async function postWebhook(url, payload) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) {
+      return { success: false, status: res.status, statusText: res.statusText };
+    }
+    return { success: true, status: res.status };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ======== 单行简洁通知 ========
+
+function formatNotifyLine(result, data) {
+  const sig = data.signals || {};
+  const total = sig.total || 0;
+  const newCount = result.summary?.newSignals;
+  const counts = sig.counts || {};
+  const recent = (sig.recent || [])[0];
+  const processes = data.processes || [];
+  const allOnline = processes.every(p => p.status === 'online');
+  const exchangeConnected = data.exchange?.status === 'connected';
+  const sys = data.system || {};
+  const mem = sys.memory?.usagePercent ?? '?';
+
+  // 状态图标
+  const healthIcon = allOnline && exchangeConnected ? '✅' : '⚠️';
+
+  // 信号增量
+  let signalPart;
+  if (newCount !== null && newCount !== undefined) {
+    if (newCount > 0) {
+      signalPart = `📡+${newCount}信号(共${total})`;
+    } else {
+      signalPart = `📡无新信号(共${total})`;
+    }
+  } else {
+    signalPart = `📡共${total}信号`;
+  }
+
+  // 最新信号
+  let lastSignalPart = '';
+  if (recent) {
+    lastSignalPart = ` · 最新:${recent.type}@${recent.symbol}$${recent.price || '?'}`;
+  }
+
+  // 各类型计数
+  const countStr = `L↑${counts.longE||0}/L↓${counts.longX||0}/S↑${counts.shortE||0}/S↓${counts.shortX||0}`;
+
+  // 系统资源
+  const cpuLoad = sys.cpu?.loadAvg?.[0] ?? '?';
+  const memStr = typeof mem === 'number' ? `${mem}%` : mem;
+
+  const line = `${healthIcon} [${fmtTime(new Date().toISOString())}] ${signalPart} ${countStr}${lastSignalPart} | 进程:${allOnline?'✅':'❌'} 交易所:${exchangeConnected?'✅':'❌'} 内存:${memStr} CPU负载:${cpuLoad}`;
+
+  return line;
+}
 
 // ======== 主检查逻辑 ========
 
@@ -360,6 +516,11 @@ async function main() {
     prevTotal = state.totalSignals;
   }
 
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const webhookUrl = webhookUrlArg ? webhookUrlArg.split('=')[1] : null;
+
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
@@ -378,7 +539,34 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
+  // --- 输出模式 ---
+
+  if (webhookMode || webhookUrl) {
+    // Webhook payload 模式
+    if (result.success && result.data) {
+      const payload = buildWebhookPayload(result, result.data);
+
+      if (webhookUrl) {
+        // POST 到外部 webhook URL
+        const whResult = await postWebhook(webhookUrl, payload);
+        if (whResult.success) {
+          console.log(`✅ Webhook 已发送至 ${webhookUrl} (HTTP ${whResult.status})`);
+        } else {
+          console.error(`❌ Webhook 发送失败: ${whResult.error || `HTTP ${whResult.status}`}`);
+        }
+      } else {
+        // 输出到 stdout
+        console.log(JSON.stringify(payload, null, 2));
+      }
+    }
+  } else if (notifyMode) {
+    // 单行简洁通知模式
+    if (result.success && result.data) {
+      console.log(formatNotifyLine(result, result.data));
+    } else {
+      console.error(`❌ [${fmtTime(new Date().toISOString())}] ${result.error}`);
+    }
+  } else if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(result.report);
