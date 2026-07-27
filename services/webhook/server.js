@@ -224,6 +224,8 @@ function readBotStatus() {
 }
 
 const BOT_CLOSED_TRADES_FILE = '/tmp/le-van-do-bot-closed.json';
+const EVENT_BOT_STATUS_FILE = '/tmp/event-bot-status.json';
+const EVENT_BOT_CLOSED_FILE = '/tmp/event-bot-closed.json';
 
 /**
  * 从持久化文件读取完整历史平仓记录
@@ -238,6 +240,35 @@ function readClosedTrades() {
     return Array.isArray(data) ? data : [];
   } catch (err) {
     console.warn(`[仪表板] ⚠️ 读取历史平仓文件失败: ${err.message}`);
+    return [];
+  }
+}
+
+// ======== 读取事件合约 Bot 状态文件 ========
+
+function readEventBotStatus() {
+  try {
+    if (!existsSync(EVENT_BOT_STATUS_FILE)) {
+      return null;
+    }
+    const raw = readFileSync(EVENT_BOT_STATUS_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取事件合约 Bot 状态文件失败: ${err.message}`);
+    return null;
+  }
+}
+
+function readEventBotClosed() {
+  try {
+    if (!existsSync(EVENT_BOT_CLOSED_FILE)) {
+      return [];
+    }
+    const raw = readFileSync(EVENT_BOT_CLOSED_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取事件合约已平仓文件失败: ${err.message}`);
     return [];
   }
 }
@@ -257,6 +288,9 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// 静态文件（public 目录）
+app.use(express.static(join(__dirname, 'public')));
+
 // 请求日志
 app.use((req, _res, next) => {
   const ts = new Date().toISOString();
@@ -271,12 +305,21 @@ app.get('/health', async (_req, res) => {
   let serverTime = null;
   let accountStatus = BOT_ACCOUNT_STATUS;
 
-  try {
-    const timeRes = await client.getServerTime();
-    serverTime = timeRes;
-    await client.getUSDTBalance();
-  } catch (err) {
-    accountStatus = `连接失败: ${err.message}`;
+  // 嘗試讀取 Bot 狀態檔獲取動態權益
+  const botStatus = readBotStatus();
+  if (botStatus && botStatus.equity != null) {
+    const eq = botStatus.equity;
+    const pnl = botStatus.total_pnl || 0;
+    const pnlSign = pnl >= 0 ? '+' : '';
+    accountStatus = `USDT 權益: $${Number(eq).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${pnlSign}$${Math.abs(pnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+  } else {
+    try {
+      const timeRes = await client.getServerTime();
+      serverTime = timeRes;
+      await client.getUSDTBalance();
+    } catch (err) {
+      accountStatus = `连接失败: ${err.message}`;
+    }
   }
 
   res.json({
@@ -438,6 +481,18 @@ app.get('/api/status', async (_req, res) => {
     }
   }
 
+  // Update exchange account status with dynamic equity
+  if (botEquity != null) {
+    exchangeAccount = `USDT 權益: $${Number(botEquity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (botTotalPnl != null) {
+      const pnlSign = botTotalPnl >= 0 ? '+' : '';
+      const totalLabel = `${pnlSign}$${Math.abs(botTotalPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      exchangeAccount += ` (${totalLabel})`;
+    }
+  } else if (exchangeStatus === 'connected') {
+    exchangeAccount = `USDT 權益: $${BOT_INITIAL_CAPITAL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
   // 最近信号（最近的 50 条）
   const recent50 = recentSignals.slice(-50).reverse();
 
@@ -479,6 +534,8 @@ app.get('/api/status', async (_req, res) => {
     equity: {
       initial_capital: botInitialCapital || BOT_INITIAL_CAPITAL,
       total_pnl: botTotalPnl,
+      unrealized_pnl: botStatus?.unrealized_pnl ?? null,
+      realized_pnl: botStatus?.realized_pnl ?? null,
       equity: botEquity,
     },
     system: systemInfo,
@@ -486,6 +543,40 @@ app.get('/api/status', async (_req, res) => {
       baseTimeframe: '15m',
       tfMult: 18,
     },
+    // ======== 事件合约 Bot 数据 ========
+    event_bot: (() => {
+      const eb = readEventBotStatus();
+      if (!eb) return null;
+      return {
+        running: eb.running,
+        uptime_seconds: eb.uptime_seconds,
+        dry_run: eb.dry_run,
+        total_trades: eb.total_trades,
+        win_count: eb.win_count,
+        loss_count: eb.loss_count,
+        win_rate: eb.win_rate,
+        total_pnl: eb.total_pnl,
+        usdt_balance: eb.usdt_balance,
+        open_positions: eb.open_positions,
+        series: eb.config?.series || [],
+        positions: (eb.positions || []).map(p => ({
+          inst_id: p.inst_id,
+          series_id: p.series_id,
+          underlying: p.underlying,
+          outcome: p.outcome,
+          size: p.size,
+          entry_price: p.entry_price,
+          cost: p.cost,
+          exp_time: p.exp_time,
+          floor_strike: p.floor_strike,
+          pnl: p.pnl,
+          roi_pct: p.roi_pct,
+        })),
+        closed_positions: (eb.closed_positions || []).slice(-20),
+        risk: eb.risk,
+        config: eb.config,
+      };
+    })(),
   });
 });
 
@@ -807,6 +898,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     border-top: 1px solid #21262d; margin-top: 40px;
   }
 </style>
+<script src="/echarts.min.js"></script>
 </head>
 <body>
 <div class="container" id="app">
@@ -1079,10 +1171,14 @@ function renderPositions(d) {
   if (totalPnl != null) {
     const initCap = eq.initial_capital || 0;
     const equityVal = eq.equity || (initCap + totalPnl);
+    const realizedPnl = eq.realized_pnl;
+    const unrealizedPnl = eq.unrealized_pnl;
     html += '<div class="pos-summary">' +
       '<div class="pos-summary-item"><div class="sum-label">初始資金</div><div class="sum-value" style="color:#f0f6fc">$' + initCap.toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
       '<div class="pos-summary-item"><div class="sum-label">總權益</div><div class="sum-value" style="color:#f0f6fc">$' + Number(equityVal).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
       '<div class="pos-summary-item"><div class="sum-label">總盈虧</div><div class="sum-value ' + pnlClass(totalPnl) + '">' + pnlSign(totalPnl) + '$' + Math.abs(totalPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' +
+      (realizedPnl != null ? '<div class="pos-summary-item"><div class="sum-label">已實現</div><div class="sum-value ' + pnlClass(realizedPnl) + '">' + pnlSign(realizedPnl) + '$' + Math.abs(realizedPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' : '') +
+      (unrealizedPnl != null ? '<div class="pos-summary-item"><div class="sum-label">浮盈</div><div class="sum-value ' + pnlClass(unrealizedPnl) + '">' + pnlSign(unrealizedPnl) + '$' + Math.abs(unrealizedPnl).toLocaleString('en-US', {minimumFractionDigits:2}) + '</div></div>' : '') +
     '</div>';
   }
 
@@ -1294,6 +1390,102 @@ function renderFooter() {
     '<a href="/health" style="color:#58a6ff;text-decoration:none">/health</a></div>';
 }
 
+function renderEventBotStatus(d) {
+  const eb = d.event_bot;
+  if (!eb) return '';
+
+  const isRunning = eb.running;
+  const runStatus = isRunning ? '🟢 運行中' : '🔴 已停止';
+  const dryRunText = eb.dry_run ? ' · 模擬模式' : ' · 實盤';
+
+  let html = '<div class="card"><div class="card-title">🎯 事件合約機器人 <span style="font-weight:400;color:#6a7283;font-size:12px">' + runStatus + dryRunText + '</span></div>';
+
+  // 概要統計
+  html += '<div class="grid-4" style="margin-bottom:16px">' +
+    '<div><div class="stat-value" style="color:' + (eb.total_pnl >= 0 ? '#0ecb81' : '#f6465d') + '">' + (eb.total_pnl >= 0 ? '+' : '') + '$' + Math.abs(eb.total_pnl || 0).toFixed(2) + '</div><div class="stat-label">總盈虧</div></div>' +
+    '<div><div class="stat-value">' + (eb.total_trades || 0) + '</div><div class="stat-label">總交易</div></div>' +
+    '<div><div class="stat-value">' + (eb.win_rate || 0) + '%</div><div class="stat-label">勝率 (' + (eb.win_count || 0) + 'W/' + (eb.loss_count || 0) + 'L)</div></div>' +
+    '<div><div class="stat-value">' + (eb.open_positions || 0) + '</div><div class="stat-label">持倉數</div></div>' +
+  '</div>';
+
+  // 風控狀態
+  if (eb.risk) {
+    const riskColor = eb.risk.consecutive_losses >= (eb.risk.consecutive_loss_limit || 99) ? '#f6465d' : '#8b949e';
+    html += '<div class="signal-counts" style="margin-bottom:16px">' +
+      '<div style="padding:8px 12px;border:1px solid #21262d;border-radius:8px"><span style="color:#8b949e;font-size:11px">📅 今日盈虧</span><br><span style="font-weight:700;color:' + (eb.risk.daily_pnl >= 0 ? '#0ecb81' : '#f6465d') + '">' + (eb.risk.daily_pnl >= 0 ? '+' : '') + '$' + Math.abs(eb.risk.daily_pnl || 0).toFixed(2) + '</span></div>' +
+      '<div style="padding:8px 12px;border:1px solid #21262d;border-radius:8px"><span style="color:#8b949e;font-size:11px">⚠️ 連續虧損</span><br><span style="font-weight:700;color:' + riskColor + '">' + (eb.risk.consecutive_losses || 0) + '/' + (eb.risk.consecutive_loss_limit || '-') + '</span></div>' +
+      '<div style="padding:8px 12px;border:1px solid #21262d;border-radius:8px"><span style="color:#8b949e;font-size:11px">💰 餘額</span><br><span style="font-weight:700">$' + (eb.usdt_balance || 0).toFixed(2) + '</span></div>' +
+    '</div>';
+  }
+
+  // 交易系列
+  if (eb.series && eb.series.length > 0) {
+    html += '<div style="margin-bottom:12px;font-size:12px;color:#8b949e">系列: ' + eb.series.join(', ') + '</div>';
+  }
+
+  // 持倉列表（簡潔卡）
+  const positions = eb.positions || [];
+  if (positions.length === 0) {
+    html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暫無事件合約持倉</div></div>';
+  } else {
+    html += '<div style="margin-bottom:12px;font-weight:600;font-size:13px;color:#8b949e">當前持倉 (' + positions.length + ')</div>';
+    for (const p of positions) {
+      const isUp = p.outcome === 'UP';
+      const outcomeColor = isUp ? '#0ecb81' : '#f6465d';
+      const outcomeLabel = isUp ? '📈 看漲' : '📉 看跌';
+      const entryColor = p.pnl >= 0 ? '#0ecb81' : '#f6465d';
+
+      // 到期時間顯示
+      const expDisplay = p.exp_time ? p.exp_time.replace(' UTC+8', '').split('·')[1]?.trim() || p.exp_time : '—';
+
+      html += '<div class="okx-pos-card ' + (isUp ? 'pos-long' : 'pos-short') + '">' +
+        '<span class="pos-symbol" style="min-width:70px;font-size:13px">' + esc(p.underlying || p.series_id) + '</span>' +
+        '<span class="pos-side-badge ' + (isUp ? 'long' : 'short') + '">' + outcomeLabel + '</span>' +
+        '<span class="pos-separator"></span>' +
+        '<span class="pos-field"><span class="fl">數量</span><span class="fv">' + (p.size || 0) + '份</span></span>' +
+        '<span class="pos-field"><span class="fl">入場價</span><span class="fv">' + (p.entry_price || 0).toFixed(3) + '</span></span>' +
+        '<span class="pos-field"><span class="fl">成本</span><span class="fv">$' + (p.cost || 0).toFixed(2) + '</span></span>' +
+        '<span class="pos-field"><span class="fl">盈虧</span><span class="fv ' + entryColorClass(p.pnl) + '">' + pnlSign(p.pnl) + '$' + Math.abs(p.pnl || 0).toFixed(2) + '</span></span>' +
+        '<span class="pos-field" style="min-width:80px"><span class="fl">到期</span><span class="fv" style="font-size:11px;color:#8b949e">' + esc(expDisplay) + '</span></span>' +
+      '</div>';
+    }
+  }
+
+  // 已平倉列表（最近 5 筆）
+  const closed = eb.closed_positions || [];
+  if (closed.length > 0) {
+    html += '<div style="margin-top:16px">' +
+      '<div style="margin-bottom:8px;font-weight:600;font-size:13px;color:#8b949e">最近平倉</div>' +
+      '<table class="signal-table" style="font-size:12px"><thead><tr>' +
+      '<th>合約</th><th>方向</th><th>數量</th><th>入場價</th><th>盈虧</th><th>結果</th></tr></thead><tbody>';
+    const recent = closed.slice(-5).reverse();
+    for (const t of recent) {
+      const won = t.pnl > 0;
+      const resultLabel = won ? '✅ 贏' : '❌ 輸';
+      const resultColor = won ? '#0ecb81' : '#f6465d';
+      const dirLabel = t.outcome === 'UP' ? '📈 UP' : '📉 DOWN';
+      html += '<tr>' +
+        '<td>' + esc(t.underlying || t.inst_id) + '</td>' +
+        '<td><span style="color:' + (t.outcome === 'UP' ? '#0ecb81' : '#f6465d') + '">' + dirLabel + '</span></td>' +
+        '<td>' + (t.size || 0) + '份</td>' +
+        '<td>' + (t.entry_price || 0).toFixed(3) + '</td>' +
+        '<td style="font-weight:600;color:' + entryColorClass(t.pnl) + '">' + pnlSign(t.pnl) + '$' + Math.abs(t.pnl || 0).toFixed(2) + '</td>' +
+        '<td style="color:' + resultColor + '">' + resultLabel + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// 辅助：根据盈亏值返回颜色 class
+function entryColorClass(v) {
+  if (v == null) return '';
+  return v > 0 ? 'positive' : (v < 0 ? 'negative' : '');
+}
+
 function renderDashboard(d) {
   return renderHeader(d) +
     renderSystem(d) +
@@ -1301,10 +1493,255 @@ function renderDashboard(d) {
     renderExchange(d) +
     renderSymbols(d) +
     renderSignals(d) +
+    renderChartCards() +
     renderPositions(d) +
     renderClosedTrades(d) +
+    renderEventBotStatus(d) +
     renderFooter();
 }
+
+function renderChartCards() {
+  return '<div class="grid-2">' +
+    '<div class="card"><div class="card-title">📈 权益曲线</div><div id="chart-equity" style="width:100%;height:280px"></div></div>' +
+    '<div class="card"><div class="card-title">🥧 多空比例</div><div id="chart-ratio" style="width:100%;height:280px"></div></div>' +
+  '</div>' +
+  '<div class="grid-2">' +
+    '<div class="card"><div class="card-title">📊 各交易对盈亏</div><div id="chart-pnl" style="width:100%;height:280px"></div></div>' +
+    '<div class="card"><div class="card-title">📉 信号频率时间轴</div><div id="chart-signal" style="width:100%;height:280px"></div></div>' +
+  '</div>';
+}
+
+// ======== ECharts 图表 ========
+let equityChart = null, pnlChart = null, ratioChart = null, signalChart = null;
+const equityHistory = [];
+const MAX_EQUITY_POINTS = 200;
+
+function updateCharts(d) {
+  // 1. 权益曲线图
+  const eqEl = document.getElementById('chart-equity');
+  if (eqEl) {
+    if (!equityChart) equityChart = echarts.init(eqEl, 'dark');
+    const eq = d.equity;
+    if (eq && eq.equity != null) {
+      equityHistory.push({
+        time: new Date(d.server.time).toLocaleTimeString('zh-CN'),
+        value: Number(eq.equity),
+      });
+      if (equityHistory.length > MAX_EQUITY_POINTS) equityHistory.shift();
+    }
+    const times = equityHistory.map(function(p) { return p.time; });
+    const values = equityHistory.map(function(p) { return p.value; });
+    if (times.length > 0) {
+      var minVal = Math.min.apply(null, values);
+      var maxVal = Math.max.apply(null, values);
+      var pad = (maxVal - minVal) * 0.1 || maxVal * 0.05 || 10;
+      equityChart.setOption({
+        tooltip: { trigger: 'axis',
+          formatter: function(params) {
+            var p = params[0];
+            return p.axisValue + '<br/>权益: <strong>$' + Number(p.value).toLocaleString('en-US', {minimumFractionDigits:2}) + '</strong>';
+          }
+        },
+        grid: { left: 70, right: 20, top: 10, bottom: 30 },
+        xAxis: {
+          type: 'category', data: times,
+          axisLabel: { color: '#8b949e', fontSize: 10 },
+          axisLine: { lineStyle: { color: '#30363d' } },
+          splitLine: { show: false },
+        },
+        yAxis: {
+          type: 'value', min: minVal - pad, max: maxVal + pad,
+          axisLabel: { color: '#8b949e', formatter: '\${value}' },
+          splitLine: { lineStyle: { color: '#21262d' } },
+        },
+        series: [{
+          type: 'line', data: values, smooth: true,
+          lineStyle: { color: '#58a6ff', width: 2 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(88,166,255,0.3)' },
+              { offset: 1, color: 'rgba(88,166,255,0.02)' },
+            ])
+          },
+          showSymbol: false,
+          markLine: {
+            silent: true,
+            data: [{ type: 'average', name: '平均' }],
+            lineStyle: { color: '#8b949e', type: 'dashed' },
+            label: { color: '#8b949e', fontSize: 10 },
+          },
+        }],
+      }, true);
+    } else {
+      equityChart.setOption({
+        title: { text: '等待数据...', left: 'center', top: 'center', textStyle: { color: '#484f58', fontSize: 14 } }
+      }, true);
+    }
+    equityChart.resize();
+  }
+
+  // 2. 各交易对盈亏柱状图
+  var pnlEl = document.getElementById('chart-pnl');
+  if (pnlEl) {
+    if (!pnlChart) pnlChart = echarts.init(pnlEl, 'dark');
+    var positions = d.positions || [];
+    var syms = [], vals = [];
+    for (var i = 0; i < positions.length; i++) {
+      var p = positions[i];
+      if (p.pnl != null) {
+        syms.push(p.symbol);
+        vals.push(Number(p.pnl));
+      }
+    }
+    if (syms.length > 0) {
+      pnlChart.setOption({
+        tooltip: { trigger: 'axis',
+          formatter: function(params) {
+            var p = params[0];
+            var c = p.value >= 0 ? '#0ecb81' : '#f6465d';
+            return p.name + '<br/>盈亏: <span style="color:' + c + ';font-weight:600">' + (p.value >= 0 ? '+' : '') + '$' + Math.abs(p.value).toFixed(2) + '</span>';
+          }
+        },
+        grid: { left: 70, right: 20, top: 10, bottom: 50 },
+        xAxis: {
+          type: 'category', data: syms,
+          axisLabel: { color: '#8b949e', fontSize: 10, rotate: 45, interval: 0 },
+          axisLine: { lineStyle: { color: '#30363d' } },
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: { color: '#8b949e', formatter: '\${value}' },
+          splitLine: { lineStyle: { color: '#21262d' } },
+        },
+        series: [{
+          type: 'bar', barMaxWidth: 30,
+          data: vals.map(function(v) {
+            return {
+              value: v,
+              itemStyle: { color: v >= 0 ? '#0ecb81' : '#f6465d', borderRadius: [3, 3, 0, 0] },
+            };
+          }),
+        }],
+      }, true);
+    } else {
+      pnlChart.setOption({
+        title: { text: '暂无持仓盈亏数据', left: 'center', top: 'center', textStyle: { color: '#484f58', fontSize: 14 } }
+      }, true);
+    }
+    pnlChart.resize();
+  }
+
+  // 3. 多空比例饼图
+  var ratioEl = document.getElementById('chart-ratio');
+  if (ratioEl) {
+    if (!ratioChart) ratioChart = echarts.init(ratioEl, 'dark');
+    var counts = d.signals.counts || {};
+    var longVal = counts.longE || 0, shortVal = counts.shortE || 0;
+    if (longVal + shortVal > 0) {
+      ratioChart.setOption({
+        tooltip: { trigger: 'item',
+          formatter: function(params) {
+            return params.name + '<br/>' + params.value + ' 次 (' + params.percent + '%)';
+          }
+        },
+        series: [{
+          type: 'pie', radius: ['40%', '70%'], center: ['50%', '55%'],
+          label: {
+            color: '#c9d1d9', fontSize: 12,
+            formatter: function(params) {
+              return params.name + '\\n' + params.value + ' (' + params.percent + '%)';
+            }
+          },
+          labelLine: { lineStyle: { color: '#30363d' } },
+          itemStyle: { borderRadius: 4, borderColor: '#161b22', borderWidth: 2 },
+          data: [
+            { value: longVal, name: '多头 longE', itemStyle: { color: '#0ecb81' } },
+            { value: shortVal, name: '空头 shortE', itemStyle: { color: '#f6465d' } },
+          ],
+        }],
+      }, true);
+    } else {
+      ratioChart.setOption({
+        title: { text: '暂无信号数据', left: 'center', top: 'center', textStyle: { color: '#484f58', fontSize: 14 } }
+      }, true);
+    }
+    ratioChart.resize();
+  }
+
+  // 4. 信号频率时间轴
+  var sigEl = document.getElementById('chart-signal');
+  if (sigEl) {
+    if (!signalChart) signalChart = echarts.init(sigEl, 'dark');
+    var recent = d.signals.recent || [];
+    var freqMap = {};
+    var freqKeys = [];
+    for (var i = 0; i < recent.length; i++) {
+      var r = recent[i];
+      if (!r.time) continue;
+      var dt = new Date(r.time);
+      var mm = Math.floor(dt.getMinutes() / 5) * 5;
+      var key = String(dt.getHours()).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+      if (!freqMap[key]) {
+        freqMap[key] = { longE: 0, shortE: 0, other: 0 };
+        freqKeys.push(key);
+      }
+      if (r.type === 'longE') freqMap[key].longE++;
+      else if (r.type === 'shortE') freqMap[key].shortE++;
+      else freqMap[key].other++;
+    }
+    freqKeys.sort();
+    if (freqKeys.length > 0) {
+      var longData = freqKeys.map(function(k) { return freqMap[k].longE; });
+      var shortData = freqKeys.map(function(k) { return freqMap[k].shortE; });
+      var otherData = freqKeys.map(function(k) { return freqMap[k].other; });
+      signalChart.setOption({
+        tooltip: { trigger: 'axis',
+          formatter: function(params) {
+            var html = params[0].axisValue;
+            for (var i = 0; i < params.length; i++) {
+              html += '<br/>' + params[i].marker + ' ' + params[i].seriesName + ': ' + params[i].value;
+            }
+            return html;
+          }
+        },
+        legend: { data: ['多头', '空头', '其他'], textStyle: { color: '#c9d1d9', fontSize: 11 }, top: 0 },
+        grid: { left: 50, right: 20, top: 30, bottom: 30 },
+        xAxis: {
+          type: 'category', data: freqKeys,
+          axisLabel: { color: '#8b949e', fontSize: 10, rotate: 45 },
+          axisLine: { lineStyle: { color: '#30363d' } },
+        },
+        yAxis: {
+          type: 'value', min: 0,
+          axisLabel: { color: '#8b949e' },
+          splitLine: { lineStyle: { color: '#21262d' } },
+        },
+        series: [
+          { name: '多头', type: 'bar', stack: 'signals', data: longData, itemStyle: { color: '#0ecb81' } },
+          { name: '空头', type: 'bar', stack: 'signals', data: shortData, itemStyle: { color: '#f6465d' } },
+          { name: '其他', type: 'bar', stack: 'signals', data: otherData, itemStyle: { color: '#d29922' } },
+        ],
+      }, true);
+    } else {
+      signalChart.setOption({
+        title: { text: '暂无信号数据', left: 'center', top: 'center', textStyle: { color: '#484f58', fontSize: 14 } }
+      }, true);
+    }
+    signalChart.resize();
+  }
+}
+
+// 窗口 resize 自动调整图表
+var resizeTimer = null;
+window.addEventListener('resize', function() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() {
+    var charts = [equityChart, pnlChart, ratioChart, signalChart];
+    for (var i = 0; i < charts.length; i++) {
+      if (charts[i]) charts[i].resize();
+    }
+  }, 200);
+});
 
 async function refresh() {
   const d = await fetchData();
@@ -1317,6 +1754,7 @@ async function refresh() {
   }
   document.getElementById('loading').style.display = 'none';
   document.getElementById('app').innerHTML = renderDashboard(d);
+  updateCharts(d);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
