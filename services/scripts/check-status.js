@@ -3,14 +3,19 @@
  * LE VAN DO® — OKX 交易机器人定时检查脚本
  *
  * 用法：
- *   node scripts/check-status.js                     # 默认：http://43.133.210.83:3000
+ *   node scripts/check-status.js                           # 默认：http://43.133.210.83:3000
  *   node scripts/check-status.js --url http://localhost:3000
- *   node scripts/check-status.js --json              # JSON 格式输出
- *   node scripts/check-status.js --save-state        # 自动保存状态到文件
+ *   node scripts/check-status.js --json                    # JSON 格式输出
+ *   node scripts/check-status.js --save-state              # 自动保存状态到文件（增量检测）
+ *   node scripts/check-status.js --notify                  # 单行简洁通知输出
+ *   node scripts/check-status.js --webhook                 # 输出 Slack/Discord 兼容 JSON payload 到 stdout
+ *   node scripts/check-status.js --webhook-url=URL         # POST JSON payload 到外部 Webhook
+ *   node scripts/check-status.js --full                    # 同时开启 save-state + notify
  *
  * 定时任务（每 15 分钟）：
  *   crontab -e
  *   每15分钟执行: cd /path/to/services && /usr/bin/node scripts/check-status.js --save-state
+ *   全量模式:    cd /path/to/services && /usr/bin/node scripts/check-status.js --full
  *
  * 也可作为模块导入：
  *   import { checkStatus } from './check-status.js';
@@ -325,6 +330,168 @@ export async function checkStatus(options = {}) {
   };
 }
 
+// ======== 通知生成（Notify 模式） ========
+
+function generateNotifyLine(result) {
+  const s = result.summary;
+  if (!s) return `❌ 检查失败: ${result.error || '未知错误'}`;
+
+  const newSignals = s.newSignals;
+  const recent = s.recentSignals || [];
+
+  let parts = [];
+  parts.push(s.processesOnline ? '✅' : '⚠️');
+  parts.push(s.exchangeOnline ? '🔗' : '🔌');
+  parts.push(s.systemHealthy ? '🖥️' : '💥');
+
+  // 信号信息
+  if (newSignals !== null) {
+    if (newSignals > 0) {
+      parts.push(`📡+${newSignals}`);
+      // 附带最近信号类型
+      if (recent.length > 0) {
+        const top = recent.slice(0, 3);
+        const types = top.map(r => r.type).join(',');
+        parts.push(`[${types}]`);
+      }
+    } else {
+      parts.push('📡-');
+    }
+  }
+
+  parts.push(`总信号:${s.totalSignals}`);
+  parts.push(`| ${fmtTime(s.timestamp)}`);
+
+  return parts.join(' ');
+}
+
+// ======== Webhook Payload 构建 ========
+
+function buildWebhookPayload(result) {
+  const s = result.summary;
+  const data = result.data;
+
+  // 构建字段
+  const fields = [];
+
+  // 进程状态
+  if (data && data.processes) {
+    for (const p of data.processes) {
+      fields.push({
+        name: `${p.status === 'online' ? '✅' : '❌'} ${p.name}`,
+        value: `PID: ${p.pid} | CPU: ${p.cpu}% | 内存: ${fmtBytes(p.memory)} | 运行: ${p.uptime}`,
+        inline: true,
+      });
+    }
+  }
+
+  // 交易所状态
+  if (data && data.exchange) {
+    const ex = data.exchange;
+    fields.push({
+      name: '🔗 交易所',
+      value: `${ex.name} | ${ex.status === 'connected' ? '✅ 已连接' : '❌ 已断开'} | ${ex.network}${ex.isTestnet ? ' (测试网)' : ''}`,
+      inline: false,
+    });
+  }
+
+  // 信号统计
+  if (data && data.signals) {
+    const sig = data.signals;
+    const counts = sig.counts || {};
+    let sigText = [
+      `总信号: ${sig.total || 0}`,
+      `longE: ${counts.longE || 0}`,
+      `shortE: ${counts.shortE || 0}`,
+      `longX: ${counts.longX || 0}`,
+      `shortX: ${counts.shortX || 0}`,
+    ].join(' | ');
+
+    if (s && s.newSignals !== null) {
+      sigText += `\n新增信号: ${s.newSignals > 0 ? `+${s.newSignals}` : '0'}`;
+    }
+
+    fields.push({
+      name: '📡 信号统计',
+      value: sigText,
+      inline: false,
+    });
+
+    // 最近信号
+    const recent = sig.recent || [];
+    if (recent.length > 0) {
+      const top = recent.slice(0, 5);
+      const lines = top.map(r => {
+        const t = fmtTime(r.time);
+        const price = r.price ? `$${parseFloat(r.price).toFixed(2)}` : '—';
+        return `\`${t}\` ${r.type} ${r.symbol} ${price}`;
+      });
+      fields.push({
+        name: `📊 最近信号 (最新 ${top.length} 条)`,
+        value: lines.join('\n'),
+        inline: false,
+      });
+    }
+  }
+
+  // 系统资源
+  if (data && data.system) {
+    const sys = data.system;
+    const mem = sys.memory;
+    const disk = sys.disk;
+    const memColor = colorByPct(mem.usagePercent);
+    const diskColor = colorByPct(disk.usagePercent);
+    fields.push({
+      name: '🖥️ 系统资源',
+      value: [
+        `内存: ${memColor} ${fmtPct(mem.usagePercent)} (${fmtBytes(mem.used)} / ${fmtBytes(mem.total)})`,
+        `磁盘: ${diskColor} ${fmtPct(disk.usagePercent)} (${fmtBytes(disk.used)} / ${fmtBytes(disk.total)})`,
+        `CPU: ${sys.cpu.cores} 核心 | 负载: ${sys.cpu.loadAvg[0]}`,
+      ].join('\n'),
+      inline: false,
+    });
+  }
+
+  // 结论
+  let conclusion = s ? (
+    s.processesOnline && s.exchangeOnline && s.systemHealthy
+      ? '✅ 系统运行正常'
+      : '⚠️ 系统存在异常'
+  ) : '❓ 状态未知';
+
+  if (s && s.newSignals !== null && s.newSignals > 0) {
+    conclusion += ` | 发现 ${s.newSignals} 条新信号`;
+  } else if (s && s.newSignals !== null) {
+    conclusion += ' | 无新信号';
+  }
+
+  const color = s && s.processesOnline && s.exchangeOnline ? 0x00FF00 : 0xFF0000;
+
+  return {
+    embeds: [{
+      title: 'LE VAN DO® — OKX 交易机器人状态报告',
+      url: result.serverUrl,
+      color,
+      fields,
+      footer: {
+        text: `检查时间: ${fmtTime(new Date().toISOString())}`,
+      },
+      timestamp: new Date().toISOString(),
+    }],
+  };
+}
+
+async function postWebhook(url, payload) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(`Webhook POST 失败: HTTP ${response.status} ${response.statusText}`);
+  }
+}
+
 // ======== 状态文件管理 ========
 
 function loadState() {
@@ -352,10 +519,18 @@ async function main() {
   const url = urlArg ? urlArg.split('=')[1] : API_URL;
   const jsonMode = args.includes('--json');
   const saveStateFlag = args.includes('--save-state');
+  const notifyMode = args.includes('--notify');
+  const webhookMode = args.includes('--webhook');
+  const webhookUrlArg = args.find(a => a.startsWith('--webhook-url='));
+  const fullMode = args.includes('--full');
+
+  // --full 等价于 --save-state + --notify
+  const effectiveSaveState = saveStateFlag || fullMode;
+  const effectiveNotify = notifyMode || fullMode;
 
   // 从状态文件读取上次记录
   let prevTotal = undefined;
-  if (saveStateFlag) {
+  if (effectiveSaveState) {
     const state = loadState();
     prevTotal = state.totalSignals;
   }
@@ -363,12 +538,30 @@ async function main() {
   const result = await checkStatus({ url, prevTotal });
 
   if (!result.success) {
+    if (effectiveNotify) {
+      console.log(`❌ 检查失败: ${result.error}`);
+    }
+    if (webhookMode || webhookUrlArg) {
+      const payload = {
+        text: `❌ 检查失败: ${result.error}`,
+      };
+      if (webhookMode) {
+        console.log(JSON.stringify(payload, null, 2));
+      }
+      if (webhookUrlArg) {
+        try {
+          await postWebhook(webhookUrlArg.split('=')[1], payload);
+        } catch (err) {
+          console.error(`[Webhook] 发送失败: ${err.message}`);
+        }
+      }
+    }
     console.error(`\n❌ ${result.error}\n`);
     process.exit(1);
   }
 
   // 保存当前状态
-  if (saveStateFlag && result.summary) {
+  if (effectiveSaveState && result.summary) {
     saveState({
       lastCheck: new Date().toISOString(),
       totalSignals: result.summary.totalSignals,
@@ -378,10 +571,36 @@ async function main() {
     });
   }
 
-  if (jsonMode) {
-    console.log(JSON.stringify(result, null, 2));
-  } else {
-    console.log(result.report);
+  // ---- 输出模式 ----
+
+  // 通知模式（单行简洁输出）
+  if (effectiveNotify) {
+    console.log(generateNotifyLine(result));
+  }
+
+  // Webhook 模式（JSON payload 到 stdout / POST 到 URL）
+  if (webhookMode || webhookUrlArg) {
+    const payload = buildWebhookPayload(result);
+    if (webhookMode) {
+      console.log(JSON.stringify(payload, null, 2));
+    }
+    if (webhookUrlArg) {
+      try {
+        await postWebhook(webhookUrlArg.split('=')[1], payload);
+        console.log('[Webhook] ✅ 已发送');
+      } catch (err) {
+        console.error(`[Webhook] ❌ 发送失败: ${err.message}`);
+      }
+    }
+  }
+
+  // 标准输出（仅在非 notify/webhook 模式下输出完整报告）
+  if (!effectiveNotify && !webhookMode && !webhookUrlArg) {
+    if (jsonMode) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(result.report);
+    }
   }
 }
 
