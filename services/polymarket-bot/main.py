@@ -13,6 +13,7 @@ Polymarket YES+NO=$1 互补套利机器人 — 主程序
   python main.py                    # 一次扫描（默认）
   python main.py --once             # 一次扫描
   python main.py --loop             # 持续循环扫描
+  python main.py --strategy         # 使用策略引擎模式（strategy.py）
   python main.py --scan-and-notify  # 扫描 + Webhook 通知
 
 环境变量:
@@ -36,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
 from polymarket_api import ArbitrageOpportunity, PolymarketClient
+from strategy import ArbitrageStrategy, ArbitrageStrategyParams
 from arbitrage_scanner import ArbitrageScanner
 from reporter import (
     format_opportunity_text,
@@ -124,6 +126,58 @@ async def cmd_scan_loop(config: dict):
         await scan_task
     finally:
         await scanner.close()
+
+
+async def cmd_strategy_engine(config: dict):
+    """
+    使用策略引擎模式（strategy.py）。
+
+    直接使用 ArbitrageStrategy 执行一次完整的扫描循环，
+    展示 strategy.py 的新策略模式。
+    """
+    logger.info("🧩 策略引擎模式")
+
+    params = ArbitrageStrategyParams(
+        threshold=config["arbitrage_threshold"],
+        trade_size=config["trade_size"],
+        min_liquidity_usdc=config["min_liquidity_usdc"],
+        max_pages=config["max_pages"],
+        min_yes_price=config["min_yes_price"],
+        max_yes_price=config["max_yes_price"],
+        min_no_price=config["min_no_price"],
+        max_no_price=config["max_no_price"],
+        clob_api_url=config["clob_api_url"],
+        scan_interval_sec=config["scan_interval_sec"],
+    )
+
+    def on_signal(signal_type, opportunity):
+        logger.info(
+            f"📨 策略信号: {signal_type.value} | "
+            f"{opportunity.market.question[:40]}... | "
+            f"利润 {opportunity.profit_pct:.2f}%"
+        )
+
+    strategy = ArbitrageStrategy(params=params, on_signal=on_signal)
+
+    try:
+        logger.info("🔍 执行策略扫描...")
+        new_opps = await strategy.scan_markets(dry_run=config["dry_run"])
+
+        # 显示策略状态
+        status = strategy.get_status()
+        logger.info(f"📊 策略状态: 扫描{status['scan_rounds']}轮, "
+                    f"累计{status['total_opportunities_found']}个机会, "
+                    f"模拟利润${status['total_simulated_profit']:.2f}")
+
+        # Webhook 通知
+        webhook_url = config.get("webhook_url", "")
+        if webhook_url and new_opps:
+            logger.info(f"📨 发送 {len(new_opps)} 条通知...")
+            await send_webhook_notification(webhook_url, new_opps)
+
+        return new_opps
+    finally:
+        await strategy.close()
 
 
 async def cmd_scan_and_notify(config: dict):
@@ -233,6 +287,10 @@ def main():
         help="持续循环扫描",
     )
     parser.add_argument(
+        "--strategy", action="store_true",
+        help="使用策略引擎模式（strategy.py）",
+    )
+    parser.add_argument(
         "--scan-and-notify", action="store_true",
         help="扫描并通过 Webhook 发送通知",
     )
@@ -268,6 +326,8 @@ def main():
         asyncio.run(cmd_show_config(config))
     elif args.list_markets:
         asyncio.run(cmd_list_markets(config))
+    elif args.strategy:
+        asyncio.run(cmd_strategy_engine(config))
     elif args.loop:
         asyncio.run(cmd_scan_loop(config))
     elif args.scan_and_notify:

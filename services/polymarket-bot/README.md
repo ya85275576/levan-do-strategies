@@ -28,17 +28,28 @@ Polymarket CLOB API (https://clob.polymarket.com)
 PolymarketClient (polymarket_api.py)
        │
        ▼
-ArbitrageScanner (arbitrage_scanner.py)
-       │  - 计算 YES+NO 成本
-       │  - 过滤流动性不足
-       │  - 去重
+┌─────────────────────────────────────────────────────┐
+│  ArbitrageStrategy (strategy.py) — 策略引擎          │
+│  ├── ArbitrageStrategyParams  — 策略参数             │
+│  ├── ArbitrageSignalType       — 信号类型枚举        │
+│  └── ArbitrageStrategy         — 状态机 + 扫描逻辑   │
+└─────────────────────────────────────────────────────┘
+       │
+       ▼  (可选包装)
+ArbitrageScanner (arbitrage_scanner.py) — 兼容包装层
+       │
        ▼
 Reporter (reporter.py)
        │  - 控制台日志
        │  - Slack / Discord Webhook
        ▼
-状态文件 (.check-state.json)
-机会记录 (opportunities.json)
+状态文件 (/tmp/polymarket-arbitrage-state.json)
+机会记录 (/tmp/polymarket-arbitrage-opportunities.json)
+       │
+       ▼
+Web Dashboard (services/webhook/server.js)
+  GET  /polymarket       — 仪表板页面
+  GET  /api/polymarket    — JSON API
 ```
 
 ## 文件说明
@@ -47,9 +58,11 @@ Reporter (reporter.py)
 |------|------|
 | `config.py` | 配置管理器 — 从环境变量读取所有参数 |
 | `polymarket_api.py` | Polymarket CLOB API 客户端 — 市场查询 + 订单簿查询 |
-| `arbitrage_scanner.py` | 扫描器核心 — 扫描、去重、状态管理 |
+| `strategy.py` | **策略引擎** — ArbitrageStrategy 类（与 bot/strategy.py 同模式） |
+| `arbitrage_scanner.py` | 扫描器包装层（委托给 strategy.py，保持向后兼容） |
 | `reporter.py` | 报告输出 — 控制台 + Slack/Discord Webhook |
 | `main.py` | 主程序 — CLI 入口 |
+| `ecosystem.config.cjs` | PM2 进程管理配置 |
 | `requirements.txt` | Python 依赖 |
 
 ## 安装
@@ -123,20 +136,22 @@ python main.py --list-markets
 2025-01-15 12:00:30.000 [INFO] polymarket.scanner:    3 | Will SOL > $200...      |   0.3500 |   0.6200 | 0.9700 |  3.09%
 ```
 
-## 整合到 PM2
+## PM2 部署
 
 ```bash
-# 安装 PM2
-npm install -g pm2
+cd services/polymarket-bot
 
-# 启动持续扫描
-pm2 start python3 --name polymarket-arbitrage \
-  -- main.py --loop \
-  --interpreter python3 \
-  --kill-timeout 10000
+# 启动（模拟模式，默认）
+pm2 start ecosystem.config.cjs
+
+# 启动（实盘）
+pm2 start ecosystem.config.cjs --env production
 
 # 查看日志
 pm2 logs polymarket-arbitrage
+
+# 查看状态
+pm2 status
 
 # 重启
 pm2 restart polymarket-arbitrage
@@ -144,6 +159,46 @@ pm2 restart polymarket-arbitrage
 # 停止
 pm2 stop polymarket-arbitrage
 ```
+
+## Web Dashboard
+
+Polymarket 套利机器人的状态已集成到 Webhook 服务的仪表板中：
+
+| 路由 | 说明 |
+|------|------|
+| `GET /polymarket` | Polymarket 套利仪表板页面 |
+| `GET /api/polymarket` | Polymarket 状态 JSON API |
+| `GET /` 或 `/dashboard` | LE VAN DO® 主仪表板 |
+
+仪表板会实时显示：
+- 扫描轮次、累计机会数、已知市场数
+- 每条套利机会的 YES/NO 价格、成本、利润率
+- 最大/平均利润率统计
+- PM2 进程运行状态
+- YES+NO=$1 原理说明
+
+## 设计模式
+
+### strategy.py（策略引擎）
+
+遵循 `services/bot/strategy.py` 的设计模式：
+
+| bot/strategy.py | polymarket-bot/strategy.py |
+|-----------------|---------------------------|
+| `StrategyParams` | `ArbitrageStrategyParams` |
+| `SignalType` | `ArbitrageSignalType` |
+| `LeVanDoStrategy` | `ArbitrageStrategy` |
+| `StrategyState` | `ArbitrageStrategyState` |
+| `analyze()` → SignalType | `scan_markets()` → List[ArbitrageOpportunity] |
+| `on_signal` 回调 | `on_signal` 回调 |
+
+### arbitrage_scanner.py（兼容包装层）
+
+保持对旧代码的向后兼容，内部委托给 `ArbitrageStrategy`。
+
+### Web Dashboard 集成
+
+通过文件系统 IPC（JSON 状态文件）与 Node.js Webhook 服务通信，与现有 LE VAN DO® 机器人相同的模式。
 
 ## License
 

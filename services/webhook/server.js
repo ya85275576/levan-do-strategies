@@ -1335,6 +1335,447 @@ app.get('/dashboard', (_req, res) => {
   res.type('html').send(DASHBOARD_HTML);
 });
 
+
+// ======== Polymarket 互补套利状态 API ========
+
+const POLYMARKET_STATE_FILE = '/tmp/polymarket-arbitrage-state.json';
+const POLYMARKET_OPPORTUNITIES_FILE = '/tmp/polymarket-arbitrage-opportunities.json';
+
+/**
+ * 读取 Polymarket 套利状态文件
+ */
+function readPolymarketState() {
+  try {
+    if (!existsSync(POLYMARKET_STATE_FILE)) {
+      return null;
+    }
+    const raw = readFileSync(POLYMARKET_STATE_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[Polymarket] ⚠️ 读取状态文件失败: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * 读取 Polymarket 套利机会记录
+ */
+function readPolymarketOpportunities(limit = 100) {
+  try {
+    if (!existsSync(POLYMARKET_OPPORTUNITIES_FILE)) {
+      return [];
+    }
+    const raw = readFileSync(POLYMARKET_OPPORTUNITIES_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.slice(-limit).reverse();
+  } catch (err) {
+    console.warn(`[Polymarket] ⚠️ 读取机会文件失败: ${err.message}`);
+    return [];
+  }
+}
+
+app.get('/api/polymarket', async (_req, res) => {
+  // 获取 PM2 Polymarket 进程状态
+  const pm2Processes = await getPm2Status();
+  const arbProcess = pm2Processes.find(p => p.name === 'polymarket-arbitrage') || null;
+
+  // 读取状态
+  const state = readPolymarketState();
+  const opportunities = readPolymarketOpportunities(200);
+
+  // 计算统计
+  const totalProfit = opportunities.reduce((sum, o) => sum + (o.profit_per_share || 0), 0);
+  const avgProfitPct = opportunities.length > 0
+    ? opportunities.reduce((sum, o) => sum + (o.profit_pct || 0), 0) / opportunities.length
+    : 0;
+  const maxProfitPct = opportunities.length > 0
+    ? Math.max(...opportunities.map(o => o.profit_pct || 0))
+    : 0;
+
+  res.json({
+    running: !!arbProcess,
+    process: arbProcess ? {
+      pm_id: arbProcess.pm_id,
+      status: arbProcess.pm2_env?.status || 'unknown',
+      uptime: arbProcess.pm2_env?.pm_uptime
+        ? formatUptime(Math.floor((Date.now() - arbProcess.pm2_env.pm_uptime) / 1000))
+        : 'N/A',
+      restartCount: arbProcess.pm2_env?.restart_time || 0,
+      cpu: arbProcess.monit?.cpu ?? 0,
+      memory: arbProcess.monit?.memory ?? 0,
+    } : null,
+    state: state ? {
+      scan_rounds: state.scan_rounds || 0,
+      total_opportunities_found: state.total_opportunities_found || 0,
+      known_markets: state.known_opportunities
+        ? Object.keys(state.known_opportunities).length
+        : 0,
+      last_scan_time: state.last_scan_time || 0,
+    } : null,
+    opportunities: opportunities.slice(0, 50),
+    stats: {
+      opportunities_count: opportunities.length,
+      total_profit_per_share: parseFloat(totalProfit.toFixed(4)),
+      avg_profit_pct: parseFloat(avgProfitPct.toFixed(2)),
+      max_profit_pct: parseFloat(maxProfitPct.toFixed(2)),
+    },
+  });
+});
+
+
+// ======== Polymarket 仪表板页面 ========
+
+const POLYMARKET_DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket 互补套利仪表板</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    min-height: 100vh;
+    padding: 0;
+    margin: 0;
+  }
+  .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 24px; margin-bottom: 24px;
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #30363d; border-radius: 12px;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .header-left { display: flex; align-items: center; gap: 16px; }
+  .logo { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; color: #58a6ff; }
+  .logo span { color: #f0883e; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  }
+  .status-pill.online { background: #1b3d2b; color: #3fb950; border: 1px solid #2ea043; }
+  .status-pill.offline { background: #3d1b1b; color: #f85149; border: 1px solid #da3633; }
+  .status-pill.dry-run { background: #1b2d3d; color: #58a6ff; border: 1px solid #1f6feb; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-dot.green { background: #3fb950; box-shadow: 0 0 6px #3fb950; }
+  .status-dot.red { background: #f85149; box-shadow: 0 0 6px #f85149; }
+  .status-dot.blue { background: #58a6ff; box-shadow: 0 0 6px #58a6ff; }
+  .last-update { font-size: 12px; color: #8b949e; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 20px; margin-bottom: 20px;
+  }
+  .card-title {
+    font-size: 14px; font-weight: 600; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  @media (max-width: 900px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+  .stat-value { font-size: 28px; font-weight: 700; color: #f0f6fc; }
+  .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #21262d; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-row .label { color: #8b949e; font-size: 13px; }
+  .stat-row .value { font-weight: 600; font-size: 13px; }
+  .signal-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .signal-table th {
+    text-align: left; padding: 10px 12px; border-bottom: 2px solid #30363d;
+    color: #8b949e; font-weight: 600; font-size: 12px; text-transform: uppercase;
+  }
+  .signal-table td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
+  .signal-table tr:hover td { background: #1c2128; }
+  .profit-high { color: #3fb950; font-weight: 700; }
+  .profit-low { color: #d29922; font-weight: 700; }
+  .profit-neg { color: #f85149; font-weight: 700; }
+  .empty-state { text-align: center; padding: 40px 20px; color: #484f58; }
+  .empty-state .icon { font-size: 36px; margin-bottom: 8px; }
+  .empty-state .text { font-size: 14px; }
+  .opportunity-card {
+    background: linear-gradient(135deg, #1a1d29 0%, #161b22 100%);
+    border: 1px solid #2d3343;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s;
+  }
+  .opportunity-card:hover { border-color: #58a6ff; }
+  .opp-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 10px;
+  }
+  .opp-question { font-size: 14px; font-weight: 600; color: #f0f6fc; line-height: 1.4; }
+  .opp-profit-badge {
+    font-size: 14px; font-weight: 700; padding: 4px 12px;
+    border-radius: 6px; white-space: nowrap; margin-left: 12px;
+  }
+  .opp-profit-badge.high { background: #0d2818; color: #3fb950; border: 1px solid #2ea043; }
+  .opp-profit-badge.medium { background: #1b2d0e; color: #d29922; border: 1px solid #bb8009; }
+  .opp-details {
+    display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: #8b949e;
+  }
+  .opp-details span { white-space: nowrap; }
+  .opp-details strong { color: #f0f6fc; }
+  .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .loading .spinner {
+    width: 36px; height: 36px; border: 3px solid #21262d;
+    border-top-color: #58a6ff; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .footer {
+    text-align: center; padding: 20px; color: #484f58; font-size: 12px;
+    border-top: 1px solid #21262d; margin-top: 40px;
+  }
+  .nav-link {
+    display: inline-block; padding: 8px 16px; border-radius: 6px;
+    color: #58a6ff; text-decoration: none; font-size: 13px; font-weight: 500;
+    border: 1px solid #30363d; margin-right: 8px; transition: all 0.2s;
+  }
+  .nav-link:hover { background: #1c2128; border-color: #58a6ff; }
+  .nav-link.active { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div>加载 Polymarket 仪表板数据...</div>
+  </div>
+</div>
+
+<script>
+const FETCH_INTERVAL = 30000;
+const apiUrl = '/api/polymarket';
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return diff + 's 前';
+  if (diff < 3600) return Math.floor(diff/60) + 'm 前';
+  return d.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function fmtPct(v) {
+  if (v == null) return '—';
+  const sign = v > 0 ? '+' : '';
+  return sign + Number(v).toFixed(2) + '%';
+}
+
+function fmtPrice(v) {
+  if (v == null) return '—';
+  return '$' + Number(v).toFixed(4);
+}
+
+function profitClass(v) {
+  if (v == null) return '';
+  if (v >= 4) return 'high';
+  if (v >= 2) return 'medium';
+  return '';
+}
+
+async function fetchData() {
+  try {
+    const resp = await fetch(apiUrl);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return await resp.json();
+  } catch (e) {
+    console.error('Fetch error:', e);
+    return null;
+  }
+}
+
+function renderHeader(d) {
+  const isOnline = d.running && d.process?.status === 'online';
+  const processInfo = d.process;
+
+  return '<div class="header">' +
+    '<div class="header-left">' +
+      '<div class="logo">Polymarket <span>Arbitrage</span></div>' +
+      '<span class="status-pill ' + (isOnline ? 'online' : 'offline') + '">' +
+        '<span class="status-dot ' + (isOnline ? 'green' : 'red') + '"></span>' +
+        (isOnline ? '🟢 运行中' : '🔴 离线') +
+      '</span>' +
+      '<a href="/dashboard" class="nav-link">← LE VAN DO 仪表板</a>' +
+    '</div>' +
+    '<div class="header-status">' +
+      (processInfo ? '<span style="font-size:12px;color:#8b949e">⬆ ' + esc(processInfo.uptime) + ' · 重启 ' + processInfo.restartCount + ' 次</span>' : '') +
+      '<span class="last-update">🔄 <span id="update-time">加载中...</span></span>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderStats(d) {
+  const state = d.state;
+  const stats = d.stats;
+
+  if (!state) {
+    return '<div class="card"><div class="card-title">📊 扫描统计</div>' +
+      '<div class="empty-state"><div class="icon">📭</div><div class="text">尚无扫描数据，请先启动机器人</div></div></div>';
+  }
+
+  return '<div class="card"><div class="card-title">📊 扫描统计</div>' +
+    '<div class="grid-4">' +
+      '<div><div class="stat-value">' + state.scan_rounds + '</div><div class="stat-label">扫描轮次</div></div>' +
+      '<div><div class="stat-value">' + state.total_opportunities_found + '</div><div class="stat-label">累计机会</div></div>' +
+      '<div><div class="stat-value">' + state.known_markets + '</div><div class="stat-label">已知市场</div></div>' +
+      '<div><div class="stat-value">' + stats.opportunities_count + '</div><div class="stat-label">历史记录</div></div>' +
+    '</div>' +
+    '<div class="grid-3" style="margin-top:16px">' +
+      '<div><div class="stat-value">' + fmtPct(stats.max_profit_pct) + '</div><div class="stat-label">最大利润率</div></div>' +
+      '<div><div class="stat-value">' + fmtPct(stats.avg_profit_pct) + '</div><div class="stat-label">平均利润率</div></div>' +
+      '<div><div class="stat-value">' + fmtPrice(stats.total_profit_per_share) + '</div><div class="stat-label">累计每股利润</div></div>' +
+    '</div></div>';
+}
+
+function renderOpportunities(d) {
+  const opps = d.opportunities || [];
+
+  let html = '<div class="card"><div class="card-title">💎 套利机会记录 <span style="font-weight:400;color:#484f58;font-size:12px">最近 ' + opps.length + ' 条</span></div>';
+
+  if (opps.length === 0) {
+    html += '<div class="empty-state"><div class="icon">🔍</div><div class="text">暂未发现套利机会</div></div>';
+  } else {
+    for (const opp of opps) {
+      const pct = opp.profit_pct || 0;
+      const badgeClass = profitClass(pct);
+      const profitColor = pct >= 4 ? '#3fb950' : (pct >= 2 ? '#d29922' : '#8b949e');
+
+      html += '<div class="opportunity-card">' +
+        '<div class="opp-header">' +
+          '<div class="opp-question">' + esc(opp.question || '未知市场') + '</div>' +
+          '<div class="opp-profit-badge ' + badgeClass + '" style="flex-shrink:0">' +
+            fmtPct(pct) +
+          '</div>' +
+        '</div>' +
+        '<div class="opp-details">' +
+          '<span>YES: <strong>' + fmtPrice(opp.yes_price) + '</strong></span>' +
+          '<span>NO: <strong>' + fmtPrice(opp.no_price) + '</strong></span>' +
+          '<span>成本: <strong>' + fmtPrice(opp.total_cost) + '</strong></span>' +
+          '<span>利润/股: <strong style="color:' + profitColor + '">' + fmtPrice(opp.profit_per_share) + '</strong></span>' +
+          '<span>深度: <strong>' + esc(opp.yes_depth) + '/' + esc(opp.no_depth) + '</strong></span>' +
+          '<span>最大规模: <strong>' + (opp.max_trade_size != null ? Number(opp.max_trade_size).toFixed(0) + ' 股' : '—') + '</strong></span>' +
+          '<span>发现: ' + fmtTime(opp.timestamp) + '</span>' +
+        '</div>' +
+      '</div>';
+    }
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderProcessCard(d) {
+  const p = d.process;
+  if (!p) {
+    return '<div class="card"><div class="card-title">⚙️ 进程状态</div>' +
+      '<div class="empty-state"><div class="icon">📭</div>' +
+      '<div class="text">PM2 进程未运行</div>' +
+      '<p style="color:#8b949e;font-size:13px;margin-top:8px">启动方式: pm2 start services/polymarket-bot/ecosystem.config.cjs</p></div></div>';
+  }
+
+  const isOnline = p.status === 'online';
+  return '<div class="card"><div class="card-title">⚙️ 进程状态</div>' +
+    '<div class="grid-2">' +
+      '<div>' +
+        '<div class="stat-row"><span class="label">进程名</span><span class="value">polymarket-arbitrage</span></div>' +
+        '<div class="stat-row"><span class="label">状态</span><span class="value">' +
+          '<span class="status-pill ' + (isOnline ? 'online' : 'offline') + '">' +
+            '<span class="status-dot ' + (isOnline ? 'green' : 'red') + '"></span>' +
+            esc(p.status) +
+          '</span></span></div>' +
+        '<div class="stat-row"><span class="label">PM2 ID</span><span class="value">' + esc(p.pm_id) + '</span></div>' +
+        '<div class="stat-row"><span class="label">运行时长</span><span class="value">' + esc(p.uptime) + '</span></div>' +
+      '</div>' +
+      '<div>' +
+        '<div class="stat-row"><span class="label">重启次数</span><span class="value">' + p.restartCount + '</span></div>' +
+        '<div class="stat-row"><span class="label">CPU</span><span class="value">' + p.cpu + '%</span></div>' +
+        '<div class="stat-row"><span class="label">内存</span><span class="value">' + fmtBytes(p.memory) + '</span></div>' +
+      '</div>' +
+    '</div></div>';
+}
+
+function fmtBytes(b) {
+  if (b === 0) return '0 B';
+  const u = ['B','KB','MB','GB','TB'];
+  const i = Math.floor(Math.log(b) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
+}
+
+function renderHowItWorks() {
+  return '<div class="card"><div class="card-title">📖 原理说明</div>' +
+    '<div style="font-size:13px;color:#8b949e;line-height:1.8">' +
+      '<p><strong style="color:#f0f6fc">YES+NO=$1 互补套利原理</strong></p>' +
+      '<p>Polymarket 上每个二元预测市场有两个代币：</p>' +
+      '<ul style="padding-left:20px;margin:8px 0">' +
+        '<li><strong style="color:#3fb950">YES 代币</strong>：事件发生时兑付 <strong>$1</strong></li>' +
+        '<li><strong style="color:#f85149">NO 代币</strong>：事件未发生时兑付 <strong>$1</strong></li>' +
+      '</ul>' +
+      '<p>正常情况：<strong style="color:#58a6ff">YES 价格 + NO 价格 ≈ $1</strong></p>' +
+      '<p>市场偏差时买入两者：</p>' +
+      '<p style="background:#1c2128;padding:12px;border-radius:8px;font-family:monospace">' +
+        'YES=$0.45 + NO=$0.50 = $0.95 &lt; $1.00<br>' +
+        '到期兑付 = $1.00<br>' +
+        '<strong style="color:#3fb950">无风险利润 = $0.05 / 股 (5.26%)</strong>' +
+      '</p>' +
+    '</div></div>';
+}
+
+function renderFooter() {
+  return '<div class="footer">Polymarket YES+NO=$1 互补套利机器人 · 数据每 30 秒刷新 · ' +
+    '<a href="/" style="color:#58a6ff;text-decoration:none">LE VAN DO® 主仪表板</a></div>';
+}
+
+function renderDashboard(d) {
+  return renderHeader(d) +
+    renderStats(d) +
+    renderProcessCard(d) +
+    renderOpportunities(d) +
+    renderHowItWorks() +
+    renderFooter();
+}
+
+async function refresh() {
+  const d = await fetchData();
+  if (!d) {
+    document.getElementById('app').innerHTML =
+      '<div class="container"><div class="empty-state" style="padding:80px 20px">' +
+      '<div class="icon">⚠️</div><div class="text">无法连接到服务器</div>' +
+      '<p style="color:#8b949e;font-size:13px;margin-top:8px">请确认 Webhook 服务正在运行</p></div></div>';
+    return;
+  }
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').innerHTML = renderDashboard(d);
+  const ut = document.getElementById('update-time');
+  if (ut) ut.textContent = new Date().toLocaleTimeString('zh-CN');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  refresh();
+  setInterval(refresh, FETCH_INTERVAL);
+});
+</script>
+</body>
+</html>`;
+
+app.get('/polymarket', (_req, res) => {
+  res.type('html').send(POLYMARKET_DASHBOARD_HTML);
+});
+
 // ======== 启动 ========
 
 app.listen(config.port, config.host, () => {
@@ -1350,6 +1791,8 @@ app.listen(config.port, config.host, () => {
   console.log(`║  Webhook:    POST /webhook                    ║`);
   console.log(`║  健康检查:   GET  /health                      ║`);
   console.log(`║  仪表板:     GET  / 或 /dashboard              ║`);
+  console.log(`║  Polymarket: GET  /polymarket                   ║`);
+  console.log(`║  Pol API:    GET  /api/polymarket               ║`);
   console.log('╚══════════════════════════════════════════════╝');
 
   if (!config.webhookSecret) {

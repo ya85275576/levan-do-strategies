@@ -1,11 +1,8 @@
 """
-Polymarket YES+NO=$1 互补套利扫描器
+Polymarket YES+NO=$1 互补套利扫描器（兼容包装层）
 
-核心业务逻辑：
-  1. 定时调用 API 扫描所有活跃市场
-  2. 计算 YES + NO 买入成本
-  3. 当成本低于阈值时记录套利机会
-  4. 维护机会状态（新出现 / 已消失 / 已确认）
+此模块是 strategy.py 的薄包装层，保持向后兼容。
+核心逻辑已迁移到 ArbitrageStrategy（strategy.py）。
 """
 import asyncio
 import json
@@ -22,6 +19,11 @@ from polymarket_api import (
     MarketInfo,
     PolymarketClient,
 )
+from strategy import (
+    ArbitrageSignalType,
+    ArbitrageStrategy,
+    ArbitrageStrategyParams,
+)
 
 logger = logging.getLogger("polymarket.scanner")
 
@@ -29,20 +31,12 @@ logger = logging.getLogger("polymarket.scanner")
 @dataclass
 class ScannerState:
     """
-    扫描器状态
-
-    维护扫描历史，用于增量检测和去重。
+    扫描器状态（兼容层）
+    内部委托给 ArbitrageStrategy.state
     """
-    # 已发现的机会集合（按 condition_id 索引）
     known_opportunities: Dict[str, dict] = field(default_factory=dict)
-
-    # 总扫描轮次
     scan_rounds: int = 0
-
-    # 累计发现的机会数（去重）
     total_opportunities_found: int = 0
-
-    # 上次扫描时间
     last_scan_time: float = 0.0
 
     def to_dict(self) -> dict:
@@ -65,9 +59,10 @@ class ScannerState:
 
 class ArbitrageScanner:
     """
-    YES+NO=$1 互补套利扫描器
+    YES+NO=$1 互补套利扫描器（兼容包装层）
 
-    定时扫描 Polymarket 市场，发现套利机会并记录。
+    内部使用 ArbitrageStrategy（strategy.py）执行核心逻辑。
+    保持对旧代码的向后兼容。
 
     用法:
         scanner = ArbitrageScanner()
@@ -78,29 +73,41 @@ class ArbitrageScanner:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or load_config()
 
-        # API 客户端
-        self.client = PolymarketClient(
+        # 创建策略参数
+        params = ArbitrageStrategyParams(
+            threshold=self.config["arbitrage_threshold"],
+            trade_size=self.config["trade_size"],
+            min_liquidity_usdc=self.config["min_liquidity_usdc"],
+            max_pages=self.config["max_pages"],
+            min_yes_price=self.config["min_yes_price"],
+            max_yes_price=self.config["max_yes_price"],
+            min_no_price=self.config["min_no_price"],
+            max_no_price=self.config["max_no_price"],
             clob_api_url=self.config["clob_api_url"],
+            scan_interval_sec=self.config["scan_interval_sec"],
         )
 
-        # 状态
+        # 核心策略引擎
+        self.strategy = ArbitrageStrategy(params=params)
+
+        # 状态文件
+        self._state_file = self.config["state_file"]
+        self._opportunities_file = self.config["opportunities_file"]
+
+        # 兼容层状态
         self.state = ScannerState()
         self._load_state()
-
-        # 机会记录
-        self.opportunities: List[ArbitrageOpportunity] = []
 
         # 运行标志
         self._running = False
 
-    # ---- 状态持久化 ----
+    # ---- 状态持久化（兼容层） ----
 
     def _load_state(self):
         """从文件加载运行状态"""
-        state_file = self.config["state_file"]
         try:
-            if os.path.exists(state_file):
-                with open(state_file, "r") as f:
+            if os.path.exists(self._state_file):
+                with open(self._state_file, "r") as f:
                     data = json.load(f)
                 self.state = ScannerState.from_dict(data)
                 logger.info(
@@ -112,42 +119,36 @@ class ArbitrageScanner:
 
     def _save_state(self):
         """保存运行状态到文件"""
-        state_file = self.config["state_file"]
         try:
-            tmp = state_file + ".tmp"
+            tmp = self._state_file + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(self.state.to_dict(), f, ensure_ascii=False)
-            os.replace(tmp, state_file)
+            os.replace(tmp, self._state_file)
         except Exception as e:
             logger.error(f"[状态] 保存失败: {e}")
 
     def _save_opportunities(self, new_opps: List[ArbitrageOpportunity]):
         """追加新的套利机会记录"""
         try:
-            # 读取已有记录
             existing = []
-            if os.path.exists(self.config["opportunities_file"]):
-                with open(self.config["opportunities_file"], "r") as f:
+            if os.path.exists(self._opportunities_file):
+                with open(self._opportunities_file, "r") as f:
                     existing = json.load(f)
 
-            # 追加新机会
             for opp in new_opps:
                 existing.append(self._opportunity_to_dict(opp))
 
-            # 只保留最近 1000 条
             if len(existing) > 1000:
                 existing = existing[-1000:]
 
-            tmp = self.config["opportunities_file"] + ".tmp"
+            tmp = self._opportunities_file + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(existing, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.config["opportunities_file"])
-
+            os.replace(tmp, self._opportunities_file)
         except Exception as e:
             logger.error(f"[记录] 保存机会失败: {e}")
 
     def _opportunity_to_dict(self, opp: ArbitrageOpportunity) -> dict:
-        """将套利机会转为可序列化字典"""
         market = opp.market
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -166,77 +167,54 @@ class ArbitrageScanner:
             "no_token_id": market.no_token_id,
         }
 
-    # ---- 核心扫描 ----
+    # ---- 核心扫描（委托给 strategy.py） ----
 
     async def scan_once(self) -> List[ArbitrageOpportunity]:
         """
         执行一次完整的市场扫描。
 
-        流程：
-          1. 获取所有活跃二元市场
-          2. 查询每个市场的 YES 和 NO 报价
-          3. 计算 YES+NO 成本，找出低于阈值的
-          4. 去重：跳过已发现的机会
-          5. 更新状态
-
-        Returns:
-            List[ArbitrageOpportunity]: 本轮新发现的套利机会
+        委托给 ArbitrageStrategy.scan_markets()。
         """
         logger.info("=" * 60)
         logger.info(f"🔍 扫描轮次 #{self.state.scan_rounds + 1}")
         logger.info("=" * 60)
 
-        # 执行扫描
-        price_filters = {
-            "min_yes_price": self.config["min_yes_price"],
-            "max_yes_price": self.config["max_yes_price"],
-            "min_no_price": self.config["min_no_price"],
-            "max_no_price": self.config["max_no_price"],
-        }
-
-        all_opportunities = await self.client.scan_arbitrage_opportunities(
-            threshold=self.config["arbitrage_threshold"],
-            min_liquidity=self.config["min_liquidity_usdc"],
-            max_pages=self.config["max_pages"],
-            price_filters=price_filters,
+        # 委托给策略引擎
+        new_opps = await self.strategy.scan_markets(
+            dry_run=self.config["dry_run"],
         )
 
-        # 去重：只保留新出现的机会
-        new_opportunities = []
-        for opp in all_opportunities:
+        # 更新兼容层状态
+        self.state.scan_rounds = self.strategy.state.scan_rounds
+        self.state.total_opportunities_found = self.strategy.state.total_opportunities_found
+        self.state.last_scan_time = time.time()
+
+        # 更新 known_opportunities（兼容层）
+        for opp in new_opps:
             cid = opp.market.condition_id
             if cid not in self.state.known_opportunities:
-                new_opportunities.append(opp)
                 self.state.known_opportunities[cid] = {
                     "first_seen": time.time(),
                     "slug": opp.market.slug,
                     "question": opp.market.question,
                 }
 
-        # 更新状态
-        self.state.scan_rounds += 1
-        self.state.total_opportunities_found += len(new_opportunities)
-        self.state.last_scan_time = time.time()
-
-        # 保存状态和记录
+        # 持久化
         self._save_state()
-        if new_opportunities:
-            self._save_opportunities(new_opportunities)
-
-        # 保存到内存
-        self.opportunities = all_opportunities
+        if new_opps:
+            self._save_opportunities(new_opps)
 
         # 输出报告
-        self._print_report(all_opportunities, new_opportunities)
+        self._print_report(self.strategy.state.current_opportunities, new_opps)
 
-        return new_opportunities
+        return new_opps
 
     def _print_report(
         self,
         all_opps: List[ArbitrageOpportunity],
         new_opps: List[ArbitrageOpportunity],
     ):
-        """打印扫描报告到控制台"""
+        """打印扫描报告"""
         logger.info("-" * 60)
         logger.info(f"📊 扫描报告")
         logger.info(f"   本轮发现: {len(all_opps)} 个机会 (新增: {len(new_opps)} 个)")
@@ -256,23 +234,16 @@ class ArbitrageScanner:
                     f"| {opp.cost:>6.4f} "
                     f"| {opp.profit_pct:>6.2f}%"
                 )
-
             if len(all_opps) > 10:
                 logger.info(f"   ... 还有 {len(all_opps) - 10} 个机会未显示")
-
         else:
             logger.info("   ❌ 当前无套利机会")
-
         logger.info("=" * 60)
 
     # ---- 持续运行 ----
 
     async def run_forever(self):
-        """
-        持续循环扫描。
-
-        每次扫描后等待 config['scan_interval_sec'] 秒。
-        """
+        """持续循环扫描"""
         self._running = True
         interval = self.config["scan_interval_sec"]
 
@@ -288,7 +259,6 @@ class ArbitrageScanner:
             except Exception as e:
                 logger.error(f"[扫描] 执行异常: {e}", exc_info=True)
 
-            # 等待下一次扫描
             if self._running:
                 logger.info(f"⏰ 等待 {interval} 秒后下次扫描...")
                 await asyncio.sleep(interval)
@@ -298,12 +268,15 @@ class ArbitrageScanner:
     def stop(self):
         """停止扫描"""
         self._running = False
+        self.strategy.state.last_signal = ArbitrageSignalType.NONE
 
     async def close(self):
         """释放资源"""
         self._save_state()
-        await self.client.close()
+        await self.strategy.close()
         logger.info("[扫描器] 资源已释放")
 
-
-
+    @property
+    def opportunities(self) -> List[ArbitrageOpportunity]:
+        """当前轮次的所有机会（兼容属性）"""
+        return self.strategy.state.current_opportunities
