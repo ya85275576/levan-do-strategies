@@ -897,13 +897,153 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode())
 
     def _html(self):
-        path = os.path.join(os.path.dirname(__file__), '../../tools/hightemptation_live/dashboard.html')
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                html = f.read()
-        except Exception as e:
-            logger.warning(f"读取 dashboard.html 失败: {e}")
-            html = '<html><body><h1>Dashboard file not found</h1></body></html>'
+        html = '''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>\u2605 HighTempTation \u5929\u6c14\u9884\u6d4b\u4eea\u8868\u677f</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;padding:16px}
+h1{font-size:20px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+h1 span{color:#58a6ff;font-weight:800}
+h1 small{font-size:12px;font-weight:400;color:#484f58;margin-left:8px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px}
+.card .v{font-size:22px;font-weight:700;font-family:'Consolas',monospace}
+.card .l{font-size:11px;color:#8b949e;margin-top:2px}
+.pos{color:#0ecb81}
+.neg{color:#f6465d}
+.neu{color:#8b949e}
+h2{font-size:13px;font-weight:600;color:#8b949e;margin:14px 0 8px;text-transform:uppercase;letter-spacing:.3px}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px}
+th{text-align:left;padding:6px 8px;border-bottom:2px solid #30363d;color:#8b949e;font-size:10px;text-transform:uppercase;white-space:nowrap}
+td{padding:5px 8px;border-bottom:1px solid #21262d;white-space:nowrap}
+tr:hover td{background:#1c2128}
+.empty{padding:20px;text-align:center;color:#484f58;font-size:13px}
+.footer{margin-top:20px;padding:12px 0;text-align:center;font-size:10px;color:#484f58;border-top:1px solid #21262d}
+.refresh-info{font-size:10px;color:#484f58;margin-left:auto}
+.scroll-wrap{max-height:360px;overflow-y:auto}
+.dir-yes{color:#0ecb81;font-weight:700}
+.dir-no{color:#f6465d;font-weight:700}
+.err{color:#f0883e}
+</style>
+</head>
+<body>
+<h1>\u2605 HighTemp<span>Tation</span> \u5929\u6c14\u9884\u6d4b<small id="statusBadge">\u8fde\u63a5\u4e2d...</small></h1>
+<div class="g" id="statsGrid"></div>
+<h2>\ud83d\udcbc \u6301\u4ed3 <span id="posCount" style="font-weight:400;color:#6a7283;font-size:10px"></span></h2>
+<div class="scroll-wrap"><table id="posTable"><thead><tr><th>\u57ce\u5e02</th><th>\u6876</th><th>\u65e5\u671f</th><th>\u5165\u573a\u4ef7</th><th>\u5f53\u524d\u4ef7</th><th>\u5927\u5c0f</th><th>P&amp;L</th><th>%</th></tr></thead><tbody id="posBody"></tbody></table></div>
+<div id="posEmpty" class="empty">\ud83d\udce6 \u6682\u65e0\u6301\u4ed3</div>
+<h2>\ud83d\udcdc \u6700\u8fd1\u5e73\u4ed3 <span id="closedCount" style="font-weight:400;color:#6a7283;font-size:10px"></span></h2>
+<div class="scroll-wrap"><table id="closedTable"><thead><tr><th>\u57ce\u5e02</th><th>\u6876</th><th>\u5b9e\u73b0 P&amp;L</th><th>\u539f\u56e0</th><th>\u65f6\u95f4</th></tr></thead><tbody id="closedBody"></tbody></table></div>
+<div id="closedEmpty" class="empty">\ud83d\udcec \u6682\u65e0\u5e73\u4ed3</div>
+<div class="footer">HighTempTation\u00ae &middot; <span id="countdown">0</span>s \u540e\u5237\u65b0 &middot; <a href="/api/status" style="color:#58a6ff;text-decoration:none">/api/status</a></div>
+<script>
+const FETCH_INTERVAL = 10000;
+let countdown = 0;
+let timer = null;
+
+function q(s) { return document.querySelector(s); }
+function esc(v) { if(v==null)return'';var d=document.createElement('div');d.textContent=String(v);return d.innerHTML; }
+function cls(v) { return v==null?'':(v>0?'pos':(v<0?'neg':'')); }
+function sign(v) { return v==null?'':(v>0?'+':''); }
+function fmtP(v) { if(v==null)return'\u2014';return sign(v)+'$'+Math.abs(v).toFixed(2); }
+
+async function fetchData() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e) {
+    q('#statusBadge').textContent = '\u2716 \u65e0\u6cd5\u8fde\u63a5';
+    q('#statusBadge').style.color = '#f85149';
+    throw e;
+  }
+}
+
+function render(d) {
+  const online = d && d.capital != null;
+  q('#statusBadge').textContent = online ? '\u2605 \u8fd0\u884c\u4e2d' : '\u2716 \u65e0\u6570\u636e';
+  q('#statusBadge').style.color = online ? '#3fb950' : '#f85149';
+  if (!online) return;
+
+  // stats
+  const init = d.initial_capital||0;
+  const cap = d.capital||0;
+  const tpnl = d.total_pnl||0;
+  const wr = d.win_rate!=null ? d.win_rate : (d.total>0?(d.wins/d.total*100).toFixed(1):'0.0');
+  q('#statsGrid').innerHTML =
+    '<div class="card"><div class="v" style="color:#58a6ff">$'+cap.toFixed(2)+'</div><div class="l">\u5f53\u524d\u8d44\u91d1</div></div>'+
+    '<div class="card"><div class="v '+(tpnl>=0?'pos':'neg')+'">'+sign(tpnl)+'$'+Math.abs(tpnl).toFixed(2)+'</div><div class="l">\u603b P&amp;L</div></div>'+
+    '<div class="card"><div class="v '+(tpnl>=0?'pos':'neg')+'">'+wr+'%</div><div class="l">\u80dc\u7387 ('+d.wins+'/'+d.total+')</div></div>'+
+    '<div class="card"><div class="v neu">'+d.open_count+' \u5f20</div><div class="l">\u6301\u4ed3</div></div>'+
+    '<div class="card"><div class="v neu">'+d.closed_count+' \u7b14</div><div class="l">\u5df2\u5e73\u4ed3</div></div>';
+
+  // open positions
+  const open = d.open||[];
+  q('#posCount').textContent = open.length+' \u4e2a';
+  const posBody = q('#posBody');
+  const posEmpty = q('#posEmpty');
+  if (open.length===0) {
+    posBody.innerHTML=''; posEmpty.style.display='block';
+  } else {
+    posEmpty.style.display='none';
+    posBody.innerHTML = open.map(p=>
+      '<tr><td style="font-weight:600">'+esc(p.city)+'</td>'+
+      '<td><span class="'+(p.bucket==='YES'?'dir-yes':'dir-no')+'">'+esc(p.bucket)+'</span></td>'+
+      '<td style="color:#8b949e;font-size:11px">'+esc(p.date)+'</td>'+
+      '<td style="font-family:Consolas,monospace">$'+Number(p.entry_no||0).toFixed(4)+'</td>'+
+      '<td style="font-family:Consolas,monospace">$'+Number(p.curr_no||0).toFixed(4)+'</td>'+
+      '<td style="font-family:Consolas,monospace">'+Number(p.size||0).toFixed(0)+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+(cls(p.pnl))+'" class="'+(cls(p.pnl))+'">'+fmtP(p.pnl)+'</td>'+
+      '<td style="font-family:Consolas,monospace;'+(cls(p.pct))+'" class="'+(cls(p.pct))+'">'+sign(p.pct)+Number(p.pct||0).toFixed(1)+'%</td></tr>'
+    ).join('');
+  }
+
+  // closed trades
+  const closed = d.recent_closed||[];
+  q('#closedCount').textContent = closed.length+' \u7b14';
+  const closedBody = q('#closedBody');
+  const closedEmpty = q('#closedEmpty');
+  if (closed.length===0) {
+    closedBody.innerHTML=''; closedEmpty.style.display='block';
+  } else {
+    closedEmpty.style.display='none';
+    closedBody.innerHTML = closed.slice(-30).reverse().map(t=>{
+      const rlz = t.realized!=null ? t.realized : (t.pnl||0);
+      return '<tr><td style="font-weight:600">'+esc(t.city)+'</td>'+
+        '<td><span class="'+(t.bucket==='YES'?'dir-yes':'dir-no')+'">'+esc(t.bucket)+'</span></td>'+
+        '<td style="font-family:Consolas,monospace;font-weight:600;'+(cls(rlz))+'">'+fmtP(rlz)+'</td>'+
+        '<td style="color:#8b949e;font-size:11px">'+esc(t.exit_reason||'')+'</td>'+
+        '<td style="color:#8b949e;font-size:11px">'+(t.exit_time?new Date(t.exit_time).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}):'\u2014')+'</td></tr>';
+    }).join('');
+  }
+}
+
+async function refresh() {
+  try {
+    const d = await fetchData();
+    render(d);
+  } catch(e) {}
+  countdown = Math.floor(FETCH_INTERVAL/1000);
+  q('#countdown').textContent = countdown;
+}
+
+function tick() {
+  countdown--;
+  if (countdown<=0) { refresh(); return; }
+  q('#countdown').textContent = countdown;
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  refresh();
+  setInterval(tick, 1000);
+});
+</script>
+</body>
+</html>'''
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
