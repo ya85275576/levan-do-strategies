@@ -1,0 +1,60 @@
+{
+  "test_name": "edge_threshold_test",
+  "eval_interval_hours": 24,
+  "elimination_rule": "worst_by_pnl",
+  "min_trades_for_elimination": 5,
+  "scan_interval": 120,
+  "variants": [
+    {
+      "name": "control",
+      "params": {
+        "MIN_EDGE": 0.20,
+        "TP_PCT": 9.0,
+        "SL_PCT": 6.5,
+        "TRAILING_ACTIVATE": 5.0,
+        "TRAILING_DRAWDOWN": 3.0,
+        "POSITION_SIZE_USD": 1.0,
+        "MAX_POSITIONS": 50,
+        "ENABLE_OBI": true,
+        "OBI_THRESHOLD": 0.2,
+        "LIQUID_START_HOUR": 12,
+        "LIQUID_END_HOUR": 20,
+        "MARKET_BIAS_DAYS": 30
+      }
+    },
+    {
+      "name": "tight_edge",
+      "params": {
+        "MIN_EDGE": 0.25,
+        "TP_PCT": 8.0,
+        "SL_PCT": 5.5,
+        "TRAILING_ACTIVATE": 4.0,
+        "TRAILING_DRAWDOWN": 2.5,
+        "POSITION_SIZE_USD": 1.5,
+        "MAX_POSITIONS": 40,
+        "ENABLE_OBI": true,
+        "OBI_THRESHOLD": 0.25,
+        "LIQUID_START_HOUR": 12,
+        "LIQUID_END_HOUR": 20,
+        "MARKET_BIAS_DAYS": 30
+      }
+    },
+    {
+      "name": "loose_edge",
+      "params": {
+        "MIN_EDGE": 0.15,
+        "TP_PCT": 10.0,
+        "SL_PCT": 7.5,
+        "TRAILING_ACTIVATE": 6.0,
+        "TRAILING_DRAWDOWN": 3.5,
+        "POSITION_SIZE_USD": 0.75,
+        "MAX_POSITIONS": 60,
+        "ENABLE_OBI": false,
+        "OBI_THRESHOLD": 0.2,
+        "LIQUID_START_HOUR": 10,
+        "LIQUID_END_HOUR": 22,
+        "MARKET_BIAS_DAYS": 15
+      }
+    }
+  ]
+}

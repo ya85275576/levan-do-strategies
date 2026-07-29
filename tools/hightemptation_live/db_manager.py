@@ -2,11 +2,16 @@
 """
 HighTempTation — SQLite 数据库管理器
 
-四表:
-  - forecasts:     预报记录（模型+城市+日期+mu+sigma）
-  - actuals:       实况温度（结算后写入）
-  - market_prices: 市场快照（定时采集 YES/NO 价格、深度）
-  - trades:        交易记录（开平仓、盈亏、归因）
+表:
+  - forecasts:         预报记录（模型+城市+日期+mu+sigma）
+  - actuals:           实况温度（结算后写入）
+  - market_prices:     市场快照（定时采集 YES/NO 价格、深度）
+  - trades:            交易记录（开平仓、盈亏、归因）
+  - calibration:       校准记录（model_prob vs realized_prob）
+  - health_checks:     健康检查记录（新增）
+  - deviation_logs:    偏差监控记录（新增）
+  - ab_tests:          A/B 测试配置（新增）
+  - ab_trade_mapping:  A/B 测试交易关联（新增）
 
 查询:
   - get_bias(city, days=30):         滚动偏差（预报 - 实况）
@@ -118,6 +123,59 @@ class TradeDB:
         CREATE INDEX IF NOT EXISTS idx_forecasts_city ON forecasts(city, date);
         CREATE INDEX IF NOT EXISTS idx_actuals_city ON actuals(city, date);
         CREATE INDEX IF NOT EXISTS idx_cal_city ON calibration(city);
+
+        -- ── 新增: 健康检查记录 ──
+        CREATE TABLE IF NOT EXISTS health_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            check_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pass','warn','fail')),
+            message TEXT,
+            detail TEXT DEFAULT '',
+            checked_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_hc_name ON health_checks(check_name, checked_at);
+
+        -- ── 新增: 偏差监控记录 ──
+        CREATE TABLE IF NOT EXISTS deviation_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            metric TEXT NOT NULL,
+            live_value REAL,
+            backtest_expected REAL,
+            deviation_ratio REAL,
+            threshold REAL,
+            status TEXT NOT NULL DEFAULT 'alert',
+            message TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dev_metric ON deviation_logs(metric, created_at);
+
+        -- ── 新增: A/B 测试配置 ──
+        CREATE TABLE IF NOT EXISTS ab_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_name TEXT NOT NULL,
+            variant_name TEXT NOT NULL,
+            params_json TEXT NOT NULL DEFAULT '{}',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            start_time TEXT NOT NULL DEFAULT (datetime('now')),
+            stop_time TEXT,
+            total_pnl REAL DEFAULT 0,
+            total_trades INTEGER DEFAULT 0,
+            win_count INTEGER DEFAULT 0,
+            loss_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(test_name, variant_name)
+        );
+
+        -- ── 新增: A/B 测试交易关联 ──
+        CREATE TABLE IF NOT EXISTS ab_trade_mapping (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_name TEXT NOT NULL,
+            variant_name TEXT NOT NULL,
+            trade_id INTEGER NOT NULL,
+            pnl REAL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ab_trade ON ab_trade_mapping(test_name, variant_name);
         """)
         self.conn.commit()
 
@@ -314,6 +372,150 @@ class TradeDB:
             ORDER BY ts DESC LIMIT 1
         """, (city, bucket_lower, bucket_upper)).fetchone()
         return dict(row) if row else None
+
+    # ── 健康检查 ──
+
+    def store_health_check(self, check_name: str, status: str,
+                            message: str = "", detail: str = "") -> bool:
+        try:
+            self.conn.execute(
+                "INSERT INTO health_checks(check_name, status, message, detail) VALUES(?,?,?,?)",
+                (check_name, status, message, detail),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入健康检查失败: {e}")
+            return False
+
+    def get_latest_health_checks(self, check_name: Optional[str] = None,
+                                   limit: int = 20) -> List[dict]:
+        if check_name:
+            rows = self.conn.execute(
+                "SELECT * FROM health_checks WHERE check_name=? ORDER BY checked_at DESC LIMIT ?",
+                (check_name, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM health_checks ORDER BY checked_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_health_check_summary(self) -> List[dict]:
+        """获取每个检查项的最新状态"""
+        rows = self.conn.execute("""
+            SELECT hc.check_name, hc.status, hc.message, hc.checked_at
+            FROM health_checks hc
+            INNER JOIN (
+                SELECT check_name, MAX(checked_at) as max_ts
+                FROM health_checks GROUP BY check_name
+            ) latest ON hc.check_name=latest.check_name AND hc.checked_at=latest.max_ts
+            ORDER BY hc.check_name
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── 偏差监控 ──
+
+    def store_deviation_log(self, metric: str, live_value: float,
+                              backtest_expected: float, deviation_ratio: float,
+                              threshold: float, status: str = "alert",
+                              message: str = "") -> bool:
+        try:
+            self.conn.execute(
+                "INSERT INTO deviation_logs(metric, live_value, backtest_expected, "
+                "deviation_ratio, threshold, status, message) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (metric, live_value, backtest_expected, deviation_ratio,
+                 threshold, status, message),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入偏差日志失败: {e}")
+            return False
+
+    def get_recent_deviations(self, limit: int = 50) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM deviation_logs ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── A/B 测试 ──
+
+    def register_ab_test(self, test_name: str, variant_name: str,
+                          params: dict) -> bool:
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO ab_tests(test_name, variant_name, params_json, "
+                "is_active, start_time) VALUES(?,?,?,1,datetime('now'))",
+                (test_name, variant_name, json.dumps(params)),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"注册 AB test 失败: {e}")
+            return False
+
+    def deactivate_ab_test(self, test_name: str, variant_name: str) -> bool:
+        try:
+            self.conn.execute(
+                "UPDATE ab_tests SET is_active=0, stop_time=datetime('now') "
+                "WHERE test_name=? AND variant_name=?",
+                (test_name, variant_name),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"停用 AB test 失败: {e}")
+            return False
+
+    def get_active_ab_tests(self) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM ab_tests WHERE is_active=1 ORDER BY test_name, variant_name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_ab_test_results(self, test_name: Optional[str] = None) -> List[dict]:
+        if test_name:
+            rows = self.conn.execute(
+                "SELECT * FROM ab_tests WHERE test_name=? ORDER BY total_pnl DESC",
+                (test_name,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM ab_tests ORDER BY test_name, total_pnl DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_ab_trade(self, test_name: str, variant_name: str,
+                         trade_id: int, pnl: Optional[float] = None) -> bool:
+        try:
+            self.conn.execute(
+                "INSERT INTO ab_trade_mapping(test_name, variant_name, trade_id, pnl) "
+                "VALUES(?,?,?,?)",
+                (test_name, variant_name, trade_id, pnl),
+            )
+            # 同时更新 ab_tests 统计
+            stats = self.conn.execute("""
+                SELECT COUNT(*) as cnt,
+                       COALESCE(SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END),0) as wins,
+                       COALESCE(SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END),0) as losses,
+                       COALESCE(SUM(pnl),0) as total_pnl
+                FROM ab_trade_mapping
+                WHERE test_name=? AND variant_name=?
+            """, (test_name, variant_name)).fetchone()
+
+            self.conn.execute(
+                "UPDATE ab_tests SET total_pnl=?, total_trades=?, win_count=?, loss_count=? "
+                "WHERE test_name=? AND variant_name=?",
+                (round(stats["total_pnl"], 2), stats["cnt"], stats["wins"],
+                 stats["losses"], test_name, variant_name),
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"记录 AB trade 失败: {e}")
+            return False
 
     def close(self):
         if self._conn:

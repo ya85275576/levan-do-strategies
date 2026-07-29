@@ -27,6 +27,8 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+from typing import Dict, List, Optional
+
 import httpx
 
 logger = logging.getLogger("alert_manager")
@@ -176,6 +178,69 @@ class AlertManager:
             f"资金: ${stats.get('equity', 0):.2f}"
         )
         return await self.send(text)
+
+    # ════════════════════════════════════════════════════════════════
+    # 新增: 健康检查告警
+    # ════════════════════════════════════════════════════════════════
+
+    async def send_health_alert(self, check_name: str, status: str,
+                                 message: str) -> Dict[str, bool]:
+        emoji = {"pass": "✅", "warn": "⚠️", "fail": "🚨"}.get(status, "ℹ️")
+        text = (
+            f"{emoji} 健康检查 [{check_name}]\n"
+            f"状态: {status.upper()}\n"
+            f"消息: {message}\n"
+            f"时间: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        )
+        return await self.send(text)
+
+    async def send_health_summary(self, checks: List[dict]) -> Dict[str, bool]:
+        """发送所有检查项的健康摘要"""
+        lines = ["📋 策略健康摘要"]
+        all_pass = True
+        for c in checks:
+            emoji = {"pass": "✅", "warn": "⚠️", "fail": "🚨"}.get(c["status"], "ℹ️")
+            lines.append(f"{emoji} {c['check_name']}: {c['status'].upper()}")
+            if c["status"] == "fail":
+                all_pass = False
+                lines.append(f"   └ {c.get('message', '')}")
+        status_emoji = "✅" if all_pass else "🚨"
+        lines.insert(0, f"{status_emoji} 策略健康摘要")
+        return await self.send("\n".join(lines))
+
+    # ════════════════════════════════════════════════════════════════
+    # 新增: 偏差监控告警
+    # ════════════════════════════════════════════════════════════════
+
+    async def send_deviation_alert(self, metric: str, live_value: float,
+                                    expected: float, deviation_ratio: float,
+                                    threshold: float) -> Dict[str, bool]:
+        text = (
+            f"⚠️ 偏差告警 [{metric}]\n"
+            f"实盘: {live_value:.4f} | 回测预期: {expected:.4f}\n"
+            f"偏差比: {deviation_ratio:.2f}x (阈值: {threshold:.1f}x)\n"
+            f"时间: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        )
+        return await self.send(text)
+
+    # ════════════════════════════════════════════════════════════════
+    # 新增: A/B 测试结果告警
+    # ════════════════════════════════════════════════════════════════
+
+    async def send_ab_test_result(self, test_name: str,
+                                    variants: List[dict]) -> Dict[str, bool]:
+        """发送 A/B 测试比较结果"""
+        lines = [f"🧪 A/B 测试报告 [{test_name}]"]
+        for v in variants:
+            trades = v.get("total_trades", 0)
+            pnl = v.get("total_pnl", 0)
+            wins = v.get("win_count", 0)
+            losses = v.get("loss_count", 0)
+            wr = (wins / trades * 100) if trades > 0 else 0
+            active = "🟢" if v.get("is_active") else "⏹️"
+            lines.append(f"{active} {v['variant_name']}: PnL={pnl:+.2f} | "
+                         f"{trades}笔 | 胜率{wr:.1f}%")
+        return await self.send("\n".join(lines))
 
     async def close(self):
         if self._client:
