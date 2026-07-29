@@ -919,6 +919,10 @@ class OkxTradingBot:
         self._load_closed_trades()
         self._last_positions_snapshot: Dict[str, dict] = {}  # {symbol: {"qty": float, "entry_price": float}}
 
+        # 资金历史曲线（供仪表板 Chart.js 使用）
+        # 每 3 秒追加一次 equity 快照
+        self.capital_history: List[dict] = []  # [{t: timestamp_ms, e: equity}]
+
     # ---- 策略信号回调 ----
 
     def _on_strategy_signal(self, symbol: str, signal: SignalType, tp_sl: TpSlLevels):
@@ -1333,6 +1337,12 @@ class OkxTradingBot:
                             break_even_price = entry_price * (1 - FEE_RATE * 2)
                         maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
 
+                        # 從 SignalHandler 狀態獲取入場時間
+                        entry_time = sh.get("entry_time")
+                        
+                        # 從策略狀態獲取 condition（模型概率/條件）
+                        condition = st.get("condition", 1.0 if side == "long" else -1.0)
+
                         positions_list.append({
                             "symbol": sym,
                             "side": side,
@@ -1351,6 +1361,8 @@ class OkxTradingBot:
                             "tp_pnl": tp_pnl,
                             "tp_hit_level": tp_hit_level,
                             "tp_margins": tp_margins,
+                            "entry_time": entry_time,
+                            "condition": condition,
                         })
 
                 # 取出佇列中最近的訊號（最多 50 條）
@@ -1364,6 +1376,13 @@ class OkxTradingBot:
                 # 歷史平倉統計
                 closed_count = len(self.closed_trades)
                 total_closed_pnl = sum(t.get("pnl", 0) or 0 for t in self.closed_trades)
+
+                # 追加资金历史（保留最多 500 点，按时间去重）
+                now_ms = int(time.time() * 1000)
+                if not self.capital_history or self.capital_history[-1]["t"] < now_ms - 2000:
+                    self.capital_history.append({"t": now_ms, "e": round(equity, 2)})
+                    if len(self.capital_history) > 500:
+                        self.capital_history = self.capital_history[-500:]
 
                 status = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1384,6 +1403,7 @@ class OkxTradingBot:
                     "signal_queue": recent_signals,
                     "symbols": symbols_state,
                     "positions": positions_list,
+                    "capital_history": self.capital_history[-200:],
                 }
 
                 tmp = self._status_file + ".tmp"
@@ -1469,6 +1489,11 @@ class OkxTradingBot:
                         break_even_price = entry_price * (1 - FEE_RATE * 2)
                     maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
 
+                    # 從 SignalHandler 狀態獲取入場時間
+                    entry_time = sh.get("entry_time")
+                    # 從策略狀態獲取 condition
+                    condition = st.get("condition", 1.0 if side == "long" else -1.0)
+                    
                     positions_list.append({
                         "symbol": sym,
                         "side": side,
@@ -1487,6 +1512,8 @@ class OkxTradingBot:
                         "tp_pnl": tp_pnl,
                         "tp_hit_level": tp_hit_level,
                         "tp_margins": tp_margins,
+                        "entry_time": entry_time,
+                        "condition": condition,
                     })
 
             recent = self._signal_queue[-50:]
@@ -1513,6 +1540,7 @@ class OkxTradingBot:
                 "closed_trades": self.closed_trades[-20:],
                 "symbols": symbols_state,
                 "positions": positions_list,
+                "capital_history": self.capital_history[-200:],
             }
 
             with open(self._status_file, "w") as f:

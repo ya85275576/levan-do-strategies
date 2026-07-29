@@ -31,7 +31,7 @@ import cors from 'cors';
 import { exec } from 'node:child_process';
 import { createRequire } from 'node:module';
 import os from 'node:os';
-import { readFileSync, statfsSync, existsSync } from 'node:fs';
+import { readFileSync, statfsSync, existsSync, readFile } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, validateConfig } from '../config/index.js';
@@ -420,6 +420,8 @@ app.get('/api/status', async (_req, res) => {
       tp_pnl: p.tp_pnl || [0, 0, 0],
       tp_hit_level: p.tp_hit_level != null ? p.tp_hit_level : 0,
       tp_margins: p.tp_margins || [null, null, null],
+      entry_time: p.entry_time || null,
+      condition: p.condition != null ? p.condition : (p.side === 'long' ? 1.0 : -1.0),
     }));
   } else {
     // 降級：使用 Webhook 本地的模擬持倉
@@ -434,6 +436,8 @@ app.get('/api/status', async (_req, res) => {
         current_price: price || null,
         pnl: null,
         pnl_pct: null,
+        entry_time: null,
+        condition: size > 0 ? 1.0 : -1.0,
       });
     }
   }
@@ -482,6 +486,7 @@ app.get('/api/status', async (_req, res) => {
       equity: botEquity,
     },
     system: systemInfo,
+    capital_history: botStatus ? (botStatus.capital_history || []) : [],
     config: {
       baseTimeframe: '15m',
       tfMult: 18,
@@ -583,6 +588,24 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ======== 仪表板页面 ========
+
+const DASHBOARD_HTML_PATH = join(__dirname, 'dashboard.html');
+let DASHBOARD_HTML_CACHE = '';
+
+/**
+ * 读取仪表板 HTML 文件（每次请求读取，支持热更新）
+ */
+function getDashboardHtml() {
+  try {
+    DASHBOARD_HTML_CACHE = readFileSync(DASHBOARD_HTML_PATH, 'utf-8');
+  } catch (err) {
+    console.warn(`[仪表板] ⚠️ 读取 dashboard.html 失败: ${err.message}`);
+    if (!DASHBOARD_HTML_CACHE) {
+      DASHBOARD_HTML_CACHE = '<html><body><h1>仪表板文件加载失败</h1></body></html>';
+    }
+  }
+  return DASHBOARD_HTML_CACHE;
+}
 
 const DASHBOARD_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1328,11 +1351,13 @@ document.addEventListener('DOMContentLoaded', () => {
 </html>`;
 
 app.get('/', (_req, res) => {
-  res.type('html').send(DASHBOARD_HTML);
+  const html = getDashboardHtml();
+  res.type('html').send(html);
 });
 
 app.get('/dashboard', (_req, res) => {
-  res.type('html').send(DASHBOARD_HTML);
+  const html = getDashboardHtml();
+  res.type('html').send(html);
 });
 
 // ======== 启动 ========

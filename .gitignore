@@ -27,3 +27,6 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+*.db
+*.db-shm
+*.db-wal
