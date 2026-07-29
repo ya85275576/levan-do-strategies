@@ -107,6 +107,9 @@
 </div>
 
 <script>
+// ── 开关：false=模拟数据(验证UI), true=真实API ──
+const USE_REAL_API = false;
+
 const FETCH_INTERVAL = 30000;
 let equityChart = null;
 let refreshTimer = null;
@@ -270,6 +273,10 @@ function pnlCls(v) { return v == null ? '' : (v > 0 ? 'positive' : (v < 0 ? 'neg
 function pnlSign(v) { return v == null ? '' : (v > 0 ? '+' : ''); }
 
 async function fetchData() {
+  // USE_REAL_API=false 时跳过真实 API，直接展示模拟 UI
+  if (!USE_REAL_API) {
+    return generateMockData();
+  }
   // 尝试从 /api/status 获取真实数据
   try {
     const r = await fetch('/api/status');
