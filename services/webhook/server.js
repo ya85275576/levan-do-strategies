@@ -31,7 +31,7 @@ import cors from 'cors';
 import { exec } from 'node:child_process';
 import { createRequire } from 'node:module';
 import os from 'node:os';
-import { readFileSync, statfsSync, existsSync, readFile } from 'node:fs';
+import { readFileSync, writeFileSync, statfsSync, existsSync, readFile } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, validateConfig } from '../config/index.js';
@@ -224,6 +224,130 @@ function readBotStatus() {
 }
 
 const BOT_CLOSED_TRADES_FILE = '/tmp/le-van-do-bot-closed.json';
+
+// ======== HighTempTation 天气预测市场 DB ========
+const WEATHER_DB_PATH = join(__dirname, '..', '..', 'tools', 'hightemptation_live', 'hightemptation.db');
+
+/**
+ * 查询 HighTempTation SQLite DB（JSON 输出）
+ */
+async function queryWeatherDB(sql) {
+  try {
+    if (!existsSync(WEATHER_DB_PATH)) return null;
+    // 用临时文件传递 SQL，避免 shell 转义问题
+    const tmpSqlFile = '/tmp/ht-query.sql';
+    writeFileSync(tmpSqlFile, sql, 'utf-8');
+    const { stdout, err } = await execAsync(`sqlite3 -json "${WEATHER_DB_PATH}" ".read ${tmpSqlFile}"`, 5000);
+    if (err) return null;
+    return JSON.parse(stdout);
+  } catch (e) {
+    console.warn(`[天气DB] 查询失败: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * 从 HighTempTation DB 读取天气预测市场数据
+ */
+async function getWeatherData() {
+  try {
+    if (!existsSync(WEATHER_DB_PATH)) return null;
+
+    // 1. 开放持仓（status='open'）
+    const openPositions = await queryWeatherDB(`
+      SELECT t.token_id, t.city,
+             t.bucket_lower, t.bucket_upper,
+             t.side, t.entry_price AS entry_no,
+             t.size, t.entry_time,
+             COALESCE((
+               SELECT mp.no_price FROM market_prices mp
+               WHERE mp.city=t.city AND mp.bucket_lower=t.bucket_lower
+                 AND mp.bucket_upper=t.bucket_upper
+               ORDER BY mp.ts DESC LIMIT 1
+             ), t.entry_price) AS curr_no,
+             t.pnl
+      FROM trades t
+      WHERE t.status='open'
+      ORDER BY t.entry_time DESC
+    `);
+
+    // 2. 最近平仓记录
+    const closedTrades = await queryWeatherDB(`
+      SELECT t.token_id, t.city,
+             t.bucket_lower, t.bucket_upper,
+             t.side, t.entry_price AS entry_no,
+             COALESCE((
+               SELECT mp.no_price FROM market_prices mp
+               WHERE mp.city=t.city AND mp.bucket_lower=t.bucket_lower
+                 AND mp.bucket_upper=t.bucket_upper
+               ORDER BY mp.ts DESC LIMIT 1
+             ), t.exit_price) AS curr_no,
+             t.exit_price, t.size, t.pnl,
+             t.entry_time, t.exit_time, t.exit_reason
+      FROM trades t
+      WHERE t.status='closed'
+      ORDER BY t.exit_time DESC LIMIT 20
+    `);
+
+    // 3. 今日 PnL
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dailyResult = await queryWeatherDB(`
+      SELECT COUNT(*) AS cnt,
+             COALESCE(SUM(pnl),0) AS total_pnl,
+             SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) AS wins,
+             SUM(CASE WHEN pnl<0 THEN 1 ELSE 0 END) AS losses
+      FROM trades
+      WHERE status='closed' AND date(exit_time)='${todayStr}'
+    `);
+
+    // 4. 总统计
+    const totalStats = await queryWeatherDB(`
+      SELECT COUNT(*) AS total_trades,
+             COALESCE(SUM(CASE WHEN status='closed' THEN pnl ELSE 0 END),0) AS total_pnl,
+             SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open_count
+      FROM trades
+    `);
+
+    // 5. 最近预报
+    const latestForecasts = await queryWeatherDB(`
+      SELECT city, date, mu, sigma, created_at
+      FROM forecasts
+      WHERE (city, date) IN (
+        SELECT city, MAX(date) FROM forecasts GROUP BY city
+      )
+      ORDER BY city
+    `);
+
+    const openList = openPositions || [];
+    const closedList = closedTrades || [];
+    const daily = (dailyResult && dailyResult[0]) || {cnt:0,total_pnl:0,wins:0,losses:0};
+    const total = (totalStats && totalStats[0]) || {total_trades:0,total_pnl:0,open_count:0};
+
+    return {
+      db_path: WEATHER_DB_PATH,
+      db_exists: true,
+      open_positions: openList,
+      closed_trades: closedList,
+      daily: {
+        count: daily.cnt,
+        total_pnl: daily.total_pnl,
+        wins: daily.wins,
+        losses: daily.losses,
+        win_rate: daily.cnt > 0 ? ((daily.wins / daily.cnt) * 100).toFixed(1) : 0,
+      },
+      summary: {
+        total_trades: total.total_trades,
+        total_pnl: total.total_pnl,
+        open_count: total.open_count,
+        equity: (10000 + total.total_pnl),
+      },
+      forecasts: latestForecasts || [],
+    };
+  } catch (e) {
+    console.warn(`[天气DB] 读取数据失败: ${e.message}`);
+    return null;
+  }
+}
 
 /**
  * 从持久化文件读取完整历史平仓记录
@@ -445,6 +569,9 @@ app.get('/api/status', async (_req, res) => {
   // 最近信号（最近的 50 条）
   const recent50 = recentSignals.slice(-50).reverse();
 
+  // ======== 读取天气预测市场数据 ========
+  const weatherData = await getWeatherData();
+
   res.json({
     server: {
       version: '1.0.0',
@@ -491,6 +618,7 @@ app.get('/api/status', async (_req, res) => {
       baseTimeframe: '15m',
       tfMult: 18,
     },
+    weather: weatherData || null,
   });
 });
 
