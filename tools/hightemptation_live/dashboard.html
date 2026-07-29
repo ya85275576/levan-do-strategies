@@ -155,40 +155,94 @@ function generateMockData() {
 
 /**
  * normaliseApiData(d) — 将 /api/status 原始响应映射为 dashboardData 格式
+ *
+ * 兼容两种格式:
+ *   Bot 格式: {capital, total_pnl, open_count, open: [{city, bucket, entry_no, curr_no, pnl}], recent_closed: [{city, bucket, pnl, realized, exit_reason}], initial_capital, capital_history}
+ *   Webhook 格式: {equity: {equity, total_pnl, initial_capital}, positions: [{symbol, side, entry_price, current_price, pnl, ...}], closed_trades: [{symbol, side, pnl, exit_time, tp_order, ...}], capital_history}
  */
 function normaliseApiData(d) {
   if (!d) return null;
 
-  const eq = d.equity || {};
-  const positions = d.positions || [];
-  const closedTrades = d.closed_trades || [];
+  // 检测格式: Bot 格式直接用 top-level 字段
+  const isBotFormat = d.capital != null || d.initial_capital != null;
 
-  const capital = eq.equity != null ? eq.equity : (eq.initial_capital || 0);
-  const totalPnl = eq.total_pnl != null ? eq.total_pnl : 0;
+  if (isBotFormat) {
+    // ── Bot (/api/status) 格式 ──
+    const open = (d.open || []).map(p => ({
+      city: p.city || '--',
+      bucket: p.bucket || '--',
+      entry_no: p.entry_no || 0,
+      curr_no: p.curr_no || 0,
+      pnl: p.pnl || 0,
+      entry_time: p.entry_time || null,
+      tp_prices: p.tp_prices || [null, null, null],
+      tp_status: p.tp_status || ['pending', 'pending', 'pending'],
+      tp_pnl: p.tp_pnl || [0, 0, 0],
+      size: p.size || null,
+    }));
 
-  const open = positions.map(p => ({
-    city: p.symbol || '--',
-    bucket: p.side === 'long' ? 'YES' : 'NO',
-    entry_no: p.entry_price || 0,
-    curr_no: p.current_price || 0,
-    pnl: p.pnl || 0,
-    entry_time: p.entry_time || null,
-    tp_prices: p.tp_prices || [null, null, null],
-    tp_status: p.tp_status || ['pending', 'pending', 'pending'],
-    tp_pnl: p.tp_pnl || [0, 0, 0],
-    leverage: p.leverage || null,
-    size: p.size || null,
-  }));
+    const recentClosed = (d.recent_closed || []).slice(-30).map(t => ({
+      city: t.city || '--',
+      bucket: t.bucket || '--',
+      pnl: t.realized != null ? t.realized : (t.pnl || 0),
+      close_time: t.exit_time || null,
+      tp_order: t.tp_order,
+      entry_price: t.entry_no || null,
+      exit_price: t.curr_no || null,
+      exit_reason: t.exit_reason || '',
+    }));
 
-  const recentClosed = (closedTrades || []).slice(-30).map(t => ({
-    city: t.symbol || '--',
-    bucket: t.side === 'long' ? 'YES' : 'NO',
-    pnl: t.pnl || 0,
-    close_time: t.close_time || t.exit_time || null,
-    tp_order: t.tp_order,     // 0=SL, 1=TP1, 2=TP2, 3=TP3
-    entry_price: t.entry_price || null,
-    exit_price: t.exit_price || null,
-  }));
+    return {
+      capital: d.capital || d.initial_capital || 0,
+      total_pnl: d.total_pnl || 0,
+      open_count: d.open_count || open.length,
+      open,
+      recent_closed: recentClosed,
+      raw: d,
+    };
+  } else {
+    // ── Webhook (server.js /api/status) 格式 ──
+    const eq = d.equity || {};
+    const positions = d.positions || [];
+    const closedTrades = d.closed_trades || [];
+
+    const capital = eq.equity != null ? eq.equity : (eq.initial_capital || 0);
+    const totalPnl = eq.total_pnl != null ? eq.total_pnl : 0;
+
+    const open = positions.map(p => ({
+      city: p.symbol || '--',
+      bucket: p.side === 'long' ? 'YES' : 'NO',
+      entry_no: p.entry_price || 0,
+      curr_no: p.current_price || 0,
+      pnl: p.pnl || 0,
+      entry_time: p.entry_time || null,
+      tp_prices: p.tp_prices || [null, null, null],
+      tp_status: p.tp_status || ['pending', 'pending', 'pending'],
+      tp_pnl: p.tp_pnl || [0, 0, 0],
+      leverage: p.leverage || null,
+      size: p.size || null,
+    }));
+
+    const recentClosed = (closedTrades || []).slice(-30).map(t => ({
+      city: t.symbol || '--',
+      bucket: t.side === 'long' ? 'YES' : 'NO',
+      pnl: t.pnl || 0,
+      close_time: t.close_time || t.exit_time || null,
+      tp_order: t.tp_order,
+      entry_price: t.entry_price || null,
+      exit_price: t.exit_price || null,
+    }));
+
+    return {
+      capital,
+      total_pnl: totalPnl,
+      open_count: positions.length,
+      open,
+      recent_closed: recentClosed,
+      raw: d,
+    };
+  }
+}
 
   return {
     capital,
