@@ -1333,6 +1333,12 @@ class OkxTradingBot:
                             break_even_price = entry_price * (1 - FEE_RATE * 2)
                         maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
 
+                        # 從 SignalHandler 狀態獲取入場時間
+                        entry_time = sh.get("entry_time")
+                        
+                        # 從策略狀態獲取 condition（模型概率/條件）
+                        condition = st.get("condition", 1.0 if side == "long" else -1.0)
+
                         positions_list.append({
                             "symbol": sym,
                             "side": side,
@@ -1351,6 +1357,8 @@ class OkxTradingBot:
                             "tp_pnl": tp_pnl,
                             "tp_hit_level": tp_hit_level,
                             "tp_margins": tp_margins,
+                            "entry_time": entry_time,
+                            "condition": condition,
                         })
 
                 # 取出佇列中最近的訊號（最多 50 條）
@@ -1469,6 +1477,11 @@ class OkxTradingBot:
                         break_even_price = entry_price * (1 - FEE_RATE * 2)
                     maintenance_margin_rate = round(MMR * leverage_val * 100, 2)  # %
 
+                    # 從 SignalHandler 狀態獲取入場時間
+                    entry_time = sh.get("entry_time")
+                    # 從策略狀態獲取 condition
+                    condition = st.get("condition", 1.0 if side == "long" else -1.0)
+                    
                     positions_list.append({
                         "symbol": sym,
                         "side": side,
@@ -1487,6 +1500,8 @@ class OkxTradingBot:
                         "tp_pnl": tp_pnl,
                         "tp_hit_level": tp_hit_level,
                         "tp_margins": tp_margins,
+                        "entry_time": entry_time,
+                        "condition": condition,
                     })
 
             recent = self._signal_queue[-50:]
