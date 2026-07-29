@@ -104,8 +104,20 @@ class TradeDB:
         CREATE INDEX IF NOT EXISTS idx_market_city ON market_prices(city);
         CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
         CREATE INDEX IF NOT EXISTS idx_trades_city ON trades(city);
+        CREATE TABLE IF NOT EXISTS calibration (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            city TEXT NOT NULL,
+            bucket_lower REAL,
+            bucket_upper REAL,
+            model_prob REAL NOT NULL,
+            realized_prob REAL,
+            sample_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(city, bucket_lower, bucket_upper)
+        );
         CREATE INDEX IF NOT EXISTS idx_forecasts_city ON forecasts(city, date);
         CREATE INDEX IF NOT EXISTS idx_actuals_city ON actuals(city, date);
+        CREATE INDEX IF NOT EXISTS idx_cal_city ON calibration(city);
         """)
         self.conn.commit()
 
@@ -261,6 +273,38 @@ class TradeDB:
             (city,),
         ).fetchone()
         return dict(row) if row else None
+
+    # ── 校准 ──
+
+    def store_calibration_record(self, city: str, bucket_lower: float,
+                                   bucket_upper: float, model_prob: float,
+                                   realized_prob: Optional[float] = None,
+                                   sample_count: int = 0) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO calibration
+                (city, bucket_lower, bucket_upper, model_prob, realized_prob, sample_count)
+                VALUES(?,?,?,?,?,?)
+            """, (city, bucket_lower, bucket_upper, model_prob, realized_prob, sample_count))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入校准记录失败: {e}")
+            return False
+
+    def get_calibration_data(self, city: Optional[str] = None,
+                              min_samples: int = 0) -> List[dict]:
+        if city:
+            rows = self.conn.execute(
+                "SELECT * FROM calibration WHERE city=? AND sample_count>=? ORDER BY bucket_lower",
+                (city, min_samples),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM calibration WHERE sample_count>=? ORDER BY city, bucket_lower",
+                (min_samples,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_latest_market(self, city: str, bucket_lower: float,
                           bucket_upper: float) -> Optional[dict]:
