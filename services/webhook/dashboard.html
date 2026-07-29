@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LE VAN DO® 交易仪表板</title>
+<title>🌤️ HighTempTation 天气预测仪表板</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -49,7 +49,7 @@
     letter-spacing: 0.3px; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;
   }
 
-  /* ===== Account Stats Grid ===== */
+  /* Stats Grid */
   .stats-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
   }
@@ -67,19 +67,50 @@
   .negative { color: #f6465d; }
   .neutral { color: #8b949e; }
 
-  .stat-card.accent-equity { border-left: 3px solid #58a6ff; }
   .stat-card.accent-pnl { border-left: 3px solid #0ecb81; }
   .stat-card.accent-loss { border-left: 3px solid #f6465d; }
-  .stat-card.accent-daily { border-left: 3px solid #d29922; }
-  .stat-card.accent-wr { border-left: 3px solid #3fb950; }
-  .stat-card.accent-tr { border-left: 3px solid #f0883e; }
   .stat-card.accent-pos { border-left: 3px solid #58a6ff; }
-  .stat-card.accent-sig { border-left: 3px solid #bc8cff; }
+  .stat-card.accent-winrate { border-left: 3px solid #d29922; }
+  .stat-card.accent-trades { border-left: 3px solid #bc8cff; }
+  .stat-card.accent-daily { border-left: 3px solid #f0883e; }
 
-  /* ===== Chart ===== */
-  .chart-container { position: relative; height: 200px; width: 100%; }
+  /* Weather Position Card */
+  .w-card {
+    display: flex; align-items: center; flex-wrap: nowrap; gap: 8px;
+    background: linear-gradient(135deg, #1a1d29 0%, #161b22 100%);
+    border: 1px solid #2d3343; border-radius: 10px;
+    padding: 10px 14px; margin-bottom: 8px;
+    transition: border-color 0.2s; font-size: 13px; min-height: 46px;
+  }
+  .w-card:hover { border-color: #58a6ff; }
+  .w-card.pos-profit { border-left: 3px solid #0ecb81; }
+  .w-card.pos-loss { border-left: 3px solid #f6465d; }
+  .w-card.pos-flat { border-left: 3px solid #6a7283; }
 
-  /* ===== Table ===== */
+  .w-card .wc-city { font-size: 14px; font-weight: 700; color: #f0f6fc; min-width: 80px; }
+  .w-card .wc-bucket {
+    font-size: 11px; font-weight: 600; color: #58a6ff;
+    background: #1b2d3d; border-radius: 4px; padding: 2px 8px;
+    border: 1px solid #1f6feb; min-width: 80px; text-align: center;
+  }
+  .w-card .wc-field {
+    font-family: 'Consolas', monospace; white-space: nowrap;
+    font-size: 12px; color: #f0f6fc; padding: 0 6px;
+  }
+  .w-card .wc-field .fl {
+    font-size: 10px; color: #6a7283;
+    font-family: 'Segoe UI', -apple-system, 'PingFang SC', sans-serif;
+    display: block; margin-bottom: 1px;
+  }
+  .w-card .wc-field .fv { font-weight: 600; }
+  .w-card .wc-field .fv.positive { color: #0ecb81; }
+  .w-card .wc-field .fv.negative { color: #f6465d; }
+  .w-card .wc-field .fv.muted { color: #6a7283; font-weight: 400; }
+  .w-card .wc-field .fv.price-up { color: #0ecb81; }
+  .w-card .wc-field .fv.price-down { color: #f6465d; }
+  .w-card .wc-sep { width: 1px; height: 32px; background: #2d3343; flex-shrink: 0; }
+
+  /* Data table */
   .data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
   .data-table th {
     text-align: left; padding: 6px 8px; border-bottom: 2px solid #30363d;
@@ -87,36 +118,23 @@
   }
   .data-table td { padding: 5px 8px; border-bottom: 1px solid #21262d; white-space: nowrap; }
   .data-table tr:hover td { background: #1c2128; }
-  .data-table .sort-link { cursor: pointer; color: #58a6ff; user-select: none; }
-  .data-table .sort-link:hover { text-decoration: underline; }
 
-  /* Signal badge */
-  .sig-badge {
-    display: inline-block; padding: 1px 6px; border-radius: 3px;
-    font-size: 9px; font-weight: 700; font-family: 'Consolas', monospace;
+  .scroll-wrap { max-height: 360px; overflow-y: auto; }
+
+  /* Forecast cards */
+  .fc-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;
   }
-  .sig-longE, .sig-longTP1, .sig-longTP2, .sig-longTP3 { background: #0d2818; color: #3fb950; }
-  .sig-shortE, .sig-shortTP1, .sig-shortTP2, .sig-shortTP3 { background: #2d1215; color: #f85149; }
-  .sig-longX, .sig-longSL { background: #1b2d3d; color: #58a6ff; }
-  .sig-shortX, .sig-shortSL { background: #2d1b0e; color: #d29922; }
+  .fc-cell {
+    padding: 8px 10px; border-radius: 6px; font-size: 11px;
+    text-align: center; border: 1px solid #21262d;
+    background: #1a1d29; transition: all 0.2s;
+  }
+  .fc-cell .fc-city { display: block; font-weight: 700; color: #f0f6fc; }
+  .fc-cell .fc-temp { display: block; font-size: 14px; color: #58a6ff; margin-top: 2px; }
+  .fc-cell .fc-sigma { display: block; font-size: 10px; color: #6a7283; }
 
-  /* Edge highlight */
-  .edge-high { color: #f0883e; font-weight: 700; }
-  .edge-high-15 { color: #f0883e; font-weight: 700; background: rgba(240,136,62,0.15); border-radius: 3px; padding: 0 4px; }
-
-  /* Action badge */
-  .act-yes { color: #0ecb81; font-weight: 600; }
-  .act-no { color: #f6465d; font-weight: 600; }
-
-  /* Position direction badge */
-  .dir-yes { color: #0ecb81; font-weight: 700; }
-  .dir-no { color: #f6465d; font-weight: 700; }
-
-  /* Scrollable containers */
-  .scroll-wrap { max-height: 320px; overflow-y: auto; }
-  .scroll-wrap-sm { max-height: 240px; overflow-y: auto; }
-
-  /* Progress */
+  /* Progress bars */
   .progress-bar { height: 5px; background: #21262d; border-radius: 3px; overflow: hidden; }
   .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
   .progress-fill.green { background: linear-gradient(90deg,#2ea043,#3fb950); }
@@ -141,36 +159,45 @@
     border-top: 1px solid #21262d; margin-top: 28px;
   }
 
-  /* Signal row highlight */
-  .sig-row-edge { }
-  .sig-row-edge.highlight { background: rgba(240,136,62,0.06); border-left: 3px solid #f0883e; }
+  /* Exit reason badges */
+  .er-badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 9px; font-weight: 700;
+  }
+  .er-TP { background: #0d2818; color: #3fb950; }
+  .er-SL { background: #2d1215; color: #f85149; }
+  .er-Trailing { background: #1b2d3d; color: #58a6ff; }
+  .er-Settlement { background: #2d1b0e; color: #d29922; }
+
+  .db-status { font-size: 10px; color: #484f58; }
+  .db-status.ok { color: #3fb950; }
+  .db-status.missing { color: #f85149; }
 </style>
 </head>
 <body>
 <div class="container" id="app">
   <div class="loading" id="loading">
     <div class="spinner"></div>
-    <div>加载仪表板数据...</div>
+    <div>加载天气预测仪表板...</div>
   </div>
 </div>
 
 <script>
-const FETCH_INTERVAL = 30000;
-let equityChart = null;
+const FETCH_INTERVAL = 15000;
+let pnlChart = null;
 let refreshTimer = null;
 let countdownValue = FETCH_INTERVAL / 1000;
-
-// Sort state for signal table
-let signalSort = { key: 'edge', asc: false };
 
 function $(s) { return document.querySelector(s); }
 
 function fmtTime(iso) {
+  if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-function fmtDateTime(iso) {
+function fmtDate(iso) {
+  if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 }
@@ -185,6 +212,16 @@ function esc(s) {
 function pnlCls(v) { return v == null ? '' : (v > 0 ? 'positive' : (v < 0 ? 'negative' : '')); }
 function pnlSign(v) { return v == null ? '' : (v > 0 ? '+' : ''); }
 
+function fmtBucket(low, high) {
+  if (low == null || high == null) return '—';
+  return Number(low).toFixed(1) + '°C ~ ' + Number(high).toFixed(1) + '°C';
+}
+
+function shortBucket(low, high) {
+  if (low == null || high == null) return '—';
+  return Number(low).toFixed(1) + '-' + Number(high).toFixed(0) + '°C';
+}
+
 async function fetchData() {
   try {
     const r = await fetch('/api/status');
@@ -193,17 +230,24 @@ async function fetchData() {
   } catch(e) { return null; }
 }
 
-// =========== RENDER HEADER ===========
+// =========== HEADER ===========
 function renderHeader(d) {
-  const ex = d.exchange;
-  const online = d.processes && d.processes.some(p=>p.status==='online');
-  const dry = ex && ex.dryRun;
-  let cls = online ? 'online' : 'offline';
-  if (dry) cls += ' dry-run';
+  const w = d.weather;
+  const dbOk = w && w.db_exists;
+  const wStats = w && w.summary;
+  const openCount = wStats ? wStats.open_count : 0;
+  const totalPnl = wStats ? wStats.total_pnl : 0;
+
   return '<div class="header"><div class="header-left">'+
-    '<div class="logo">LE VAN <span>DO</span>®</div>'+
-    '<span class="status-pill '+cls+'"><span class="status-dot '+(online?'green':'red')+'"></span>'+(online?'运行中':'离线')+(dry?' · 模拟':'')+'</span>'+
-    (ex?'<span class="status-pill '+(ex.status==='connected'?'online':'offline')+'"><span class="status-dot '+(ex.status==='connected'?'green':'red')+'"></span>'+(ex.network||'--')+'</span>':'')+
+    '<div class="logo">🌤️ HighTemp<span>Tation</span></div>'+
+    '<span class="status-pill '+(dbOk?'online':'offline')+'">'+
+      '<span class="status-dot '+(dbOk?'green':'red')+'"></span>'+
+      (dbOk ? 'DB 连接正常' : 'DB 离线')+
+    '</span>'+
+    '<span class="status-pill '+(openCount>0?'online':'offline')+'">'+
+      '<span class="status-dot '+(openCount>0?'green':'red')+'"></span>'+
+      openCount+' 持仓'+
+    '</span>'+
     '</div><div class="header-right">'+
     '<div class="refresh-bar"><span class="countdown" id="countdown">'+countdownValue+'s</span>'+
     '<div class="bar-track"><div class="bar-fill" id="refreshBarFill"></div></div></div>'+
@@ -212,253 +256,146 @@ function renderHeader(d) {
     '</div></div>';
 }
 
-// =========== RENDER ACCOUNT STATS ===========
+// =========== SUMMARY STATS ===========
 function renderStats(d) {
-  const eq = d.equity || {};
-  const sig = d.signals || {};
-  const pos = d.positions || [];
-  const initCap = eq.initial_capital || 10000;
-  const curEquity = eq.equity != null ? eq.equity : initCap;
-  const totalPnl = eq.total_pnl != null ? eq.total_pnl : 0;
-  const totalTrades = (d.closed_trades_summary||{}).count || 0;
-  const winCount = (d.closed_trades||[]).filter(t=>t.pnl>0).length;
-  const winRate = totalTrades > 0 ? (winCount/totalTrades*100) : 0;
+  const w = d.weather;
+  const wDaily = w ? w.daily : null;
+  const wStats = w ? w.summary : null;
 
-  // Daily P&L from capital_history
-  const ch = d.capital_history || [];
-  let dailyPnl = 0;
-  if (ch.length > 1) {
-    const todayStart = Date.now() - 86400000;
-    let startVal = ch[0].e;
-    for (let i = ch.length-1; i >= 0; i--) {
-      if (ch[i].t < todayStart) { startVal = ch[i].e; break; }
-    }
-    dailyPnl = curEquity - startVal;
-  }
+  const totalPnl = wStats ? wStats.total_pnl : 0;
+  const openCount = wStats ? wStats.open_count : 0;
+  const totalTrades = wStats ? wStats.total_trades : 0;
+  const equity = wStats ? wStats.equity : 10000;
 
-  const pnlClr = totalPnl >= 0 ? '#0ecb81' : '#f6465d';
-  const dayClr = dailyPnl >= 0 ? '#0ecb81' : '#f6465d';
+  const dailyPnl = wDaily ? (wDaily.total_pnl || 0) : 0;
+  const dailyWins = wDaily ? (wDaily.wins || 0) : 0;
+  const dailyLosses = wDaily ? (wDaily.losses || 0) : 0;
+  const dailyCount = wDaily ? (wDaily.count || 0) : 0;
+  const winRate = dailyCount > 0 ? ((dailyWins / dailyCount) * 100).toFixed(1) : '0.0';
+
+  const pnlColor = totalPnl >= 0 ? '#0ecb81' : '#f6465d';
+  const dayColor = dailyPnl >= 0 ? '#0ecb81' : '#f6465d';
 
   return '<div class="card"><div class="card-title">📊 账户总览</div><div class="stats-grid">'+
-    '<div class="stat-card accent-equity"><div class="sv" style="color:#58a6ff">$'+Number(curEquity).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">当前资金</div><div class="sc neutral">初始 $'+Number(initCap).toLocaleString()+'</div></div>'+
-    '<div class="stat-card '+(totalPnl>=0?'accent-pnl':'accent-loss')+'"><div class="sv" style="color:'+pnlClr+'">'+pnlSign(totalPnl)+'$'+Math.abs(totalPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">总 P&L</div><div class="sc '+(totalPnl>=0?'positive':'negative')+'">'+(totalPnl>=0?'+':'')+((totalPnl/initCap*100)||0).toFixed(2)+'%</div></div>'+
-    '<div class="stat-card accent-daily"><div class="sv" style="color:'+dayClr+'">'+pnlSign(dailyPnl)+'$'+Math.abs(dailyPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">日 P&L</div></div>'+
-    '<div class="stat-card '+(winRate>=50?'accent-wr':'accent-loss')+'"><div class="sv" style="color:'+(winRate>=50?'#3fb950':'#f6465d')+'">'+winRate.toFixed(1)+'%</div><div class="sl">胜率</div><div class="sc neutral">'+totalTrades+' 笔交易</div></div>'+
-    '<div class="stat-card accent-tr"><div class="sv" style="color:#f0883e">'+totalTrades+'</div><div class="sl">总交易</div><div class="sc neutral">'+(sig.total||0)+' 信号</div></div>'+
-    '<div class="stat-card accent-pos"><div class="sv" style="color:#58a6ff">'+pos.length+'</div><div class="sl">持仓</div><div class="sc neutral">'+pos.filter(p=>p.side==='long').length+'多 · '+pos.filter(p=>p.side==='short').length+'空</div></div>'+
-    '<div class="stat-card accent-sig"><div class="sv" style="color:#bc8cff">'+(sig.total||0)+'</div><div class="sl">信号</div><div class="sc neutral">'+(sig.botTotal?'Bot '+sig.botTotal:'')+'</div></div>'+
+    '<div class="stat-card accent-pos"><div class="sv" style="color:#58a6ff">$'+Number(equity).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">当前资金</div><div class="sc neutral">初始 $10,000.00</div></div>'+
+    '<div class="stat-card '+(totalPnl>=0?'accent-pnl':'accent-loss')+'"><div class="sv" style="color:'+pnlColor+'">'+pnlSign(totalPnl)+'$'+Math.abs(totalPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">总 P&L</div><div class="sc '+(totalPnl>=0?'positive':'negative')+'">'+(totalPnl>=0?'+':'')+((totalPnl/10000*100)||0).toFixed(2)+'%</div></div>'+
+    '<div class="stat-card accent-daily"><div class="sv" style="color:'+dayColor+'">'+pnlSign(dailyPnl)+'$'+Math.abs(dailyPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">日 P&L</div><div class="sc neutral">'+dailyCount+' 笔交易</div></div>'+
+    '<div class="stat-card accent-winrate"><div class="sv" style="color:#d29922">'+winRate+'%</div><div class="sl">日胜率</div><div class="sc neutral">'+dailyWins+'胜 / '+dailyLosses+'负</div></div>'+
+    '<div class="stat-card accent-trades"><div class="sv" style="color:#bc8cff">'+totalTrades+'</div><div class="sl">累计交易</div></div>'+
+    '<div class="stat-card accent-pos"><div class="sv" style="color:#58a6ff">'+openCount+'</div><div class="sl">当前持仓</div></div>'+
+    '<div class="stat-card '+(dailyWins>=dailyLosses||dailyCount===0?'accent-pnl':'accent-loss')+'"><div class="sv" style="color:'+(dailyWins>=dailyLosses||dailyCount===0?'#0ecb81':'#f6465d')+'">'+(wDaily?'$'+Number(Math.abs(dailyPnl/dailyCount||0)).toFixed(2):'$0.00')+'</div><div class="sl">均笔盈亏</div></div>'+
+    '<div class="stat-card" style="border-left:3px solid #58a6ff"><div class="sv" style="font-size:14px;color:#8b949e">'+(d.server?fmtTime(d.server.time):'')+'</div><div class="sl">最后更新</div></div>'+
     '</div></div>';
 }
 
-// =========== RENDER CHART ===========
-function renderChart(d) {
-  const ch = d.capital_history || [];
-  if (ch.length < 2) {
-    return '<div class="card"><div class="card-title">📈 资金曲线</div><div class="chart-container"><canvas id="eqChart"></canvas></div></div>';
-  }
-  return '<div class="card"><div class="card-title">📈 资金曲线 <span style="font-weight:400;color:#484f58;font-size:10px">'+ch.length+' 个采样点</span></div><div class="chart-container"><canvas id="eqChart"></canvas></div></div>';
-}
-
-function drawChart(d) {
-  const ch = d.capital_history || [];
-  const canvas = document.getElementById('eqChart');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  if (ch.length < 2) {
-    if (equityChart) { equityChart.destroy(); equityChart=null; }
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle='#484f58'; ctx.font='13px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('等待更多数据...',canvas.width/2,canvas.height/2);
-    return;
-  }
-  const labels = ch.map(p=>new Date(p.t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
-  const data = ch.map(p=>p.e);
-  const startVal = data[0];
-  const endVal = data[data.length-1];
-  const isUp = endVal >= startVal;
-  const lineColor = isUp ? '#0ecb81' : '#f6465d';
-
-  if (equityChart) {
-    equityChart.data.labels = labels;
-    equityChart.data.datasets[0].data = data;
-    equityChart.data.datasets[0].borderColor = lineColor;
-    equityChart.update('none');
-    return;
-  }
-  equityChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: '权益 ($)',
-        data,
-        borderColor: lineColor,
-        backgroundColor: ctx2=>{
-          const g=ctx2.chart.ctx.createLinearGradient(0,0,0,200);
-          g.addColorStop(0, isUp ? 'rgba(14,203,129,0.2)' : 'rgba(246,70,93,0.2)');
-          g.addColorStop(1, 'rgba(14,203,129,0.01)');
-          return g;
-        },
-        fill: true, tension: 0.3, pointRadius: 0, pointHitRadius: 6, borderWidth: 2,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: '#1c2128', titleColor: '#8b949e', bodyColor: '#f0f6fc',
-          borderColor: '#30363d', borderWidth: 1, padding: 6,
-          callbacks: { label: ctx=>'$'+Number(ctx.raw).toLocaleString('en-US',{minimumFractionDigits:2}) }
-        }
-      },
-      scales: {
-        x: { display: true, grid: {color:'#21262d',drawBorder:false}, ticks: {color:'#484f58',font:{size:9},maxTicksLimit:8} },
-        y: { display: true, grid: {color:'#21262d',drawBorder:false}, ticks: {color:'#484f58',font:{size:9},callback:v=>'$'+v.toLocaleString()} }
-      }
-    }
-  });
-}
-
-// =========== RENDER SIGNAL TABLE ===========
-function parseEdge(sigType) {
-  const m = { 'longE':1.0,'shortE':-1.0,'longTP1':1.1,'shortTP1':-1.1,'longTP2':1.2,'shortTP2':-1.2,'longTP3':1.3,'shortTP3':-1.3,'longSL':0,'shortSL':0,'longX':0,'shortX':0,'none':0 };
-  return m[sigType] || 0;
-}
-
-function signalAction(sigType) {
-  if (sigType==='longE') return 'Buy YES';
-  if (sigType==='shortE') return 'Buy NO';
-  if (sigType==='longX'||sigType==='longTP1'||sigType==='longTP2'||sigType==='longTP3'||sigType==='longSL') return 'Sell YES';
-  if (sigType==='shortX'||sigType==='shortTP1'||sigType==='shortTP2'||sigType==='shortTP3'||sigType==='shortSL') return 'Sell NO';
-  return '—';
-}
-
-function renderSignals(d) {
-  const sig = d.signals || {};
-  const recent = sig.recent || [];
-
-  // Sort signals by |edge| descending
-  const sorted = [...recent].map(r=>({...r, edge: parseEdge(r.type), absEdge: Math.abs(parseEdge(r.type)) }));
-  sorted.sort((a,b)=> signalSort.asc ? a.absEdge - b.absEdge : b.absEdge - a.absEdge);
-
-  // Find max absEdge for scaling
-  const maxAbs = sorted.length > 0 ? Math.max(...sorted.map(s=>s.absEdge), 0.1) : 1;
-
-  let html = '<div class="card"><div class="card-title">📡 信号表 <span style="font-weight:400;color:#484f58;font-size:10px">共 '+(sig.total||0)+' 条</span></div>';
-  if (sorted.length===0) {
-    html += '<div class="empty-state"><div class="icon">📭</div><div class="text">暂无信号</div></div></div>';
-    return html;
+// =========== WEATHER FORECASTS ===========
+function renderForecasts(d) {
+  const w = d.weather;
+  if (!w || !w.forecasts || w.forecasts.length === 0) {
+    return '<div class="card"><div class="card-title">🌡️ 城市预报</div><div class="empty-state"><div class="icon">🌤️</div><div class="text">暂无预报数据</div></div></div>';
   }
 
-  html += '<div class="scroll-wrap-sm"><table class="data-table"><thead><tr>'+
-    '<th>时间</th><th>信号</th>'+
-    '<th>YES价</th><th>建议动作</th>'+
-    '<th class="sort-link" onclick="toggleSort()">边缘% ⬇</th>'+
-    '<th>交易对</th>'+
-  '</tr></thead><tbody>';
+  let html = '<div class="card"><div class="card-title">🌡️ 城市预报 <span style="font-weight:400;color:#484f58;font-size:10px">'+w.forecasts.length+' 个城市</span></div><div class="fc-grid">';
 
-  for (const r of sorted) {
-    const edge = r.edge;
-    const absEdge = r.absEdge;
-    const isHighlight = absEdge >= 0.15;
-    const edgePct = (edge * 100).toFixed(1);
-    const edgeColor = edge > 0 ? '#0ecb81' : (edge < 0 ? '#f6465d' : '#484f58');
-
-    const action = signalAction(r.type);
-    const actionCls = action.includes('YES') ? 'act-yes' : (action.includes('NO') ? 'act-no' : '');
-
-    // YES price = signal price
-    const yesPrice = r.price ? '$'+esc(r.price) : '—';
-
-    html += '<tr class="sig-row-edge'+(isHighlight?' highlight':'')+'">'+
-      '<td style="color:#8b949e;font-size:10px">'+fmtTime(r.time)+'</td>'+
-      '<td><span class="sig-badge sig-'+r.type+'">'+esc(r.type)+'</span></td>'+
-      '<td style="font-family:Consolas,monospace">'+yesPrice+'</td>'+
-      '<td><span class="'+actionCls+'">'+action+'</span></td>'+
-      '<td style="font-family:Consolas,monospace;font-weight:600;color:'+edgeColor+'">'+
-        (isHighlight ? '<span class="edge-high-15">' : '') +
-        (edge > 0 ? '+' : '') + edgePct + '%' +
-        (isHighlight ? '</span>' : '') +
-        '<div class="progress-bar" style="margin-top:2px;height:3px;width:60px">'+
-        '<div class="progress-fill '+ (edge > 0 ? 'green' : 'red') + '" style="width:'+ (absEdge/maxAbs*100) +'%"></div></div>'+
-      '</td>'+
-      '<td>'+esc(r.symbol)+'</td>'+
-    '</tr>';
+  for (const fc of w.forecasts) {
+    const tempStr = fc.mu != null ? fc.mu.toFixed(1) + '°C' : '--';
+    const sigmaStr = fc.sigma != null ? 'σ=' + fc.sigma.toFixed(1) : '';
+    html += '<div class="fc-cell">'+
+      '<span class="fc-city">'+esc(fc.city)+'</span>'+
+      '<span class="fc-temp">'+tempStr+'</span>'+
+      '<span class="fc-sigma">'+sigmaStr+'</span>'+
+    '</div>';
   }
 
-  html += '</tbody></table></div></div>';
+  html += '</div></div>';
   return html;
 }
 
-function toggleSort() {
-  signalSort.asc = !signalSort.asc;
-  refresh();
-}
+// =========== OPEN POSITIONS ===========
+function renderOpenPositions(d) {
+  const w = d.weather;
+  const positions = (w && w.open_positions) || [];
 
-// =========== RENDER POSITIONS ===========
-function calcDuration(entryTime) {
-  if (!entryTime) return '—';
-  const diff = Date.now() - new Date(entryTime).getTime();
-  if (diff < 60000) return '<1m';
-  if (diff < 3600000) return Math.floor(diff/60000)+'m';
-  if (diff < 86400000) return Math.floor(diff/3600000)+'h';
-  return Math.floor(diff/86400000)+'d';
-}
+  let html = '<div class="card"><div class="card-title">💼 持仓 <span style="font-weight:400;color:#6a7283;font-size:10px">'+
+    positions.length+' 个</span></div>';
 
-function renderPositions(d) {
-  const pos = d.positions || [];
-  let html = '<div class="card"><div class="card-title">💼 持仓 <span style="font-weight:400;color:#6a7283;font-size:10px">'+pos.length+' 个</span></div>';
-  if (pos.length===0) {
+  if (positions.length === 0) {
     html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div></div>';
     return html;
   }
 
+  for (const p of positions) {
+    const entryNo = p.entry_no != null ? Number(p.entry_no) : 0;
+    const currNo = p.curr_no != null ? Number(p.curr_no) : entryNo;
+    const pnl = p.pnl != null ? Number(p.pnl) : ((entryNo - currNo) * (p.size || 0));
+    const pnlPct = entryNo > 0 ? ((entryNo - currNo) / entryNo * 100) : 0;
+
+    const isProfit = pnl >= 0;
+    const posClass = isProfit ? 'pos-profit' : (pnl < 0 ? 'pos-loss' : 'pos-flat');
+
+    html += '<div class="w-card '+posClass+'">'+
+      '<span class="wc-city">'+esc(p.city)+'</span>'+
+      '<span class="wc-bucket">'+shortBucket(p.bucket_lower, p.bucket_upper)+'</span>'+
+      '<span class="wc-sep"></span>'+
+      '<span class="wc-field"><span class="fl">入场 NO</span><span class="fv">$'+entryNo.toFixed(4)+'</span></span>'+
+      '<span class="wc-field"><span class="fl">当前 NO</span><span class="fv '+(currNo <= entryNo ? 'price-up' : 'price-down')+'">$'+currNo.toFixed(4)+'</span></span>'+
+      '<span class="wc-sep"></span>'+
+      '<span class="wc-field" style="min-width:70px"><span class="fl">盈亏</span><span class="fv '+pnlCls(pnl)+'">'+pnlSign(pnl)+'$'+Math.abs(pnl).toFixed(2)+'</span></span>'+
+      '<span class="wc-field" style="min-width:60px"><span class="fl">收益率</span><span class="fv '+(pnlPct>0?'positive':'negative')+'">'+(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%</span></span>'+
+      '<span class="wc-sep"></span>'+
+      '<span class="wc-field"><span class="fl">数量</span><span class="fv muted">'+(p.size != null ? p.size.toFixed(4) : '—')+'</span></span>'+
+      '<span class="wc-field"><span class="fl">开仓</span><span class="fv muted">'+fmtTime(p.entry_time)+'</span></span>'+
+    '</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// =========== CLOSED TRADES ===========
+function renderClosedTrades(d) {
+  const w = d.weather;
+  const closed = (w && w.closed_trades) || [];
+  const wDaily = w ? w.daily : null;
+  const wStats = w ? w.summary : null;
+
+  const totalPnl = wStats ? wStats.total_pnl : 0;
+  const pnlColor = totalPnl >= 0 ? '#3fb950' : '#f85149';
+
+  if (closed.length === 0) {
+    return '<div class="card"><div class="card-title">📜 平仓记录</div><div class="empty-state"><div class="icon">📭</div><div class="text">暂无平仓记录</div></div></div>';
+  }
+
+  let html = '<div class="card"><div class="card-title">📜 平仓记录 <span style="font-weight:400;color:#484f58;font-size:10px">最近 '+closed.length+' 笔·总盈亏 <span style="color:'+pnlColor+'">'+pnlSign(totalPnl)+'$'+Math.abs(totalPnl).toFixed(2)+'</span></span></div>';
+
   html += '<div class="scroll-wrap"><table class="data-table"><thead><tr>'+
-    '<th>品种</th><th>方向</th><th>Shares</th><th>入场价</th><th>当前价</th><th>浮盈亏</th><th>时长</th><th>偏差</th><th>TP1/2/3</th>'+
+    '<th>城市</th><th>桶</th><th>入场 NO</th><th>平仓价</th><th>盈亏</th><th>收益率</th><th>归因</th><th>时间</th>'+
   '</tr></thead><tbody>';
 
-  for (const p of pos) {
-    const dir = p.side === 'long' ? 'YES' : 'NO';
-    const dirCls = p.side === 'long' ? 'dir-yes' : 'dir-no';
+  for (const t of closed) {
+    const pnl = t.pnl != null ? t.pnl : 0;
+    const entryNo = t.entry_no != null ? t.entry_no : 0;
+    const exitPrice = t.exit_price != null ? t.exit_price : 0;
+    const returnPct = entryNo > 0 ? ((entryNo - exitPrice) / entryNo * 100) : 0;
 
-    const shares = p.size != null ? Number(p.size).toFixed(4) : '—';
-    const entryStr = p.entry_price ? '$'+Number(p.entry_price).toFixed(p.entry_price<1?6:2) : '—';
-    const curStr = p.current_price ? '$'+Number(p.current_price).toFixed(p.current_price<1?6:2) : '—';
-
-    const pnl = p.pnl;
-    let pnlStr = '—';
-    if (pnl != null) {
-      pnlStr = pnlSign(pnl)+'$'+Math.abs(pnl).toLocaleString('en-US',{minimumFractionDigits:2});
-    }
-
-    const dur = calcDuration(p.entry_time);
-
-    // Deviation = (current - entry) / entry for long, (entry - current) / entry for short
-    let dev = 0, devStr = '—';
-    if (p.entry_price && p.entry_price > 0 && p.current_price && p.current_price > 0) {
-      if (p.side === 'long') {
-        dev = (Number(p.current_price) - Number(p.entry_price)) / Number(p.entry_price);
-      } else {
-        dev = (Number(p.entry_price) - Number(p.current_price)) / Number(p.entry_price);
-      }
-      devStr = (dev >= 0 ? '+' : '') + (dev*100).toFixed(2) + '%';
-    }
-
-    // TP
-    const tp = p.tp_prices || [null,null,null];
-    const tps = tp.map(v=> v && v>0 ? '$'+Number(v).toFixed(v<1?6:2) : '--').join(' / ');
+    // Exit reason badge
+    const reason = t.exit_reason || '';
+    let reasonBadge = '—';
+    if (reason === 'TP') reasonBadge = '<span class="er-badge er-TP">TP</span>';
+    else if (reason === 'SL') reasonBadge = '<span class="er-badge er-SL">SL</span>';
+    else if (reason === 'Trailing') reasonBadge = '<span class="er-badge er-Trailing">Trailing</span>';
+    else if (reason === 'Settlement' || reason === 'ForceStop') reasonBadge = '<span class="er-badge er-Settlement">'+esc(reason)+'</span>';
+    else if (reason) reasonBadge = '<span class="er-badge" style="background:#1c1c1c;color:#8b949e">'+esc(reason)+'</span>';
 
     html += '<tr>'+
-      '<td style="font-weight:600">'+esc(p.symbol)+'</td>'+
-      '<td><span class="'+dirCls+'">'+dir+'</span></td>'+
-      '<td style="font-family:Consolas,monospace">'+shares+'</td>'+
-      '<td style="font-family:Consolas,monospace">'+entryStr+'</td>'+
-      '<td style="font-family:Consolas,monospace">'+curStr+'</td>'+
-      '<td style="font-family:Consolas,monospace;font-weight:600;'+pnlCls(pnl)+'">'+pnlStr+'</td>'+
-      '<td style="color:#8b949e;font-size:10px">'+dur+'</td>'+
-      '<td style="font-family:Consolas,monospace;font-weight:600;'+(dev>=0?'color:#0ecb81':'color:#f6465d')+'">'+devStr+'</td>'+
-      '<td style="font-family:Consolas,monospace;font-size:10px;color:#6a7283">'+tps+'</td>'+
+      '<td style="font-weight:600">'+esc(t.city)+'</td>'+
+      '<td style="color:#58a6ff">'+shortBucket(t.bucket_lower, t.bucket_upper)+'</td>'+
+      '<td style="font-family:Consolas,monospace">$'+Number(entryNo).toFixed(4)+'</td>'+
+      '<td style="font-family:Consolas,monospace">$'+Number(exitPrice).toFixed(4)+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+pnlCls(pnl)+'">'+pnlSign(pnl)+'$'+Math.abs(pnl).toFixed(2)+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+(returnPct>=0?'color:#0ecb81':'color:#f6465d')+'">'+(returnPct>=0?'+':'')+returnPct.toFixed(2)+'%</td>'+
+      '<td style="text-align:center">'+reasonBadge+'</td>'+
+      '<td style="color:#8b949e;font-size:10px">'+fmtTime(t.exit_time || t.entry_time)+'</td>'+
     '</tr>';
   }
 
@@ -466,100 +403,56 @@ function renderPositions(d) {
   return html;
 }
 
-// =========== RENDER MISC SECTIONS ===========
-function renderMisc(d) {
+// =========== SYSTEM INFO ===========
+function renderSystem(d) {
   const sys = d.system;
-  const syms = d.symbols || [];
-  const ex = d.exchange;
-  const procs = d.processes || [];
+  if (!sys) return '';
 
-  let html = '';
+  const mem = sys.memory || {};
+  const disk = sys.disk || {};
+  const cpu = sys.cpu || {};
+  const memPct = mem.usagePercent || 0;
+  const diskPct = disk.usagePercent || 0;
+  const barCol = p => p>80?'red':(p>60?'yellow':'green');
 
-  // Exchange
-  if (ex) {
-    html += '<div class="card"><div class="card-title">🔗 交易所</div>'+
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
-      '<div><div class="stat-row" style="display:flex;justify-content:space-between;padding:4px 0"><span style="color:#8b949e;font-size:11px">网络</span><span style="font-weight:600;font-size:11px">'+esc(ex.network)+(ex.isTestnet?' 🟡':' 🔴')+'</span></div>'+
-      '<div class="stat-row" style="display:flex;justify-content:space-between;padding:4px 0"><span style="color:#8b949e;font-size:11px">模式</span><span style="font-weight:600;font-size:11px">'+(ex.dryRun?'模拟':'实盘')+' · '+(ex.leverage||'')+'x</span></div></div>'+
-      '<div><div class="stat-row" style="display:flex;justify-content:space-between;padding:4px 0"><span style="color:#8b949e;font-size:11px">状态</span><span style="font-weight:600;font-size:11px">'+(ex.status==='connected'?'🟢':'🔴')+' '+esc(ex.status)+'</span></div>'+
-      '<div class="stat-row" style="display:flex;justify-content:space-between;padding:4px 0"><span style="color:#8b949e;font-size:11px">账户</span><span style="font-size:10px;color:#8b949e">'+esc(ex.accountStatus)+'</span></div></div>'+
-      '</div></div>';
-  }
+  let html = '<div class="card"><div class="card-title">🖥️ 系统 <span style="font-weight:400;color:#484f58;font-size:10px">'+esc(sys.hostname)+'</span></div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'+
+    '<div><div style="font-size:16px;font-weight:700">'+memPct+'%</div><div style="font-size:10px;color:#6a7283">内存</div><div class="progress-bar" style="margin-top:4px"><div class="progress-fill '+barCol(memPct)+'" style="width:'+memPct+'%"></div></div></div>'+
+    '<div><div style="font-size:16px;font-weight:700">'+diskPct+'%</div><div style="font-size:10px;color:#6a7283">磁盘</div><div class="progress-bar" style="margin-top:4px"><div class="progress-fill '+barCol(diskPct)+'" style="width:'+diskPct+'%"></div></div></div>'+
+    '<div><div style="font-size:16px;font-weight:700">'+cpu.cores+'</div><div style="font-size:10px;color:#6a7283">CPU 核心</div><div style="font-size:10px;color:#8b949e;margin-top:4px">负载: '+((cpu.loadAvg||[]).map(v=>v.toFixed(1)).join(' / ')||'—')+'</div></div>'+
+    '</div></div>';
 
-  // System
-  if (sys) {
-    const m=sys.memory||{}, dk=sys.disk||{}, c=sys.cpu||{};
-    const mPct=m.usagePercent||0, dPct=dk.usagePercent||0;
-    function barCol(p){ return p>80?'red':(p>60?'yellow':'green'); }
-    html += '<div class="card"><div class="card-title">🖥️ 系统</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
-      '<div><div style="font-size:16px;font-weight:700">'+mPct+'%</div><div style="font-size:10px;color:#6a7283">内存</div><div class="progress-bar" style="margin-top:4px"><div class="progress-fill '+barCol(mPct)+'" style="width:'+mPct+'%"></div></div></div>'+
-      '<div><div style="font-size:16px;font-weight:700">'+dPct+'%</div><div style="font-size:10px;color:#6a7283">磁盘</div><div class="progress-bar" style="margin-top:4px"><div class="progress-fill '+barCol(dPct)+'" style="width:'+dPct+'%"></div></div></div>'+
-      '</div></div>';
-  }
-
-  return html;
-}
-
-// =========== RENDER CLOSED TRADES ===========
-function renderClosed(d) {
-  const closed = d.closed_trades || [];
-  const sum = d.closed_trades_summary || {count:0,total_closed_pnl:0};
-  if (closed.length===0) return '';
-  const totalPnl = sum.total_closed_pnl || 0;
-  const pnlColor = totalPnl>=0?'#3fb950':'#f85149';
-  const pp = totalPnl>0?'+':'';
-
-  let html = '<div class="card"><div class="card-title">📜 历史平仓 <span style="font-weight:400;color:#484f58;font-size:10px">共 '+sum.count+' 笔 · 总盈亏 <span style="color:'+pnlColor+'">'+pp+'$'+Math.abs(totalPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></span></div>';
-
-  html += '<div class="scroll-wrap-sm"><table class="data-table"><thead><tr>'+
-    '<th>品种</th><th>方向</th><th>盈亏</th><th>归因</th><th>时间</th>'+
-  '</tr></thead><tbody>';
-
-  for (const t of closed.slice(-30).reverse()) {
-    const side = t.side==='long'?'YES':'NO';
-    const sideClr = t.side==='long'?'#0ecb81':'#f6465d';
-    let pnlStr='—';
-    if (t.pnl!=null) {
-      const ps=t.pnl>0?'+':'';
-      pnlStr='<span style="color:'+(t.pnl>=0?'#0ecb81':'#f6465d')+'">'+ps+'$'+Math.abs(t.pnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>';
-    }
-
-    let attr='—';
-    if (t.tp_order===1) attr='<span style="color:#0ecb81;font-weight:600">TP1</span>';
-    else if (t.tp_order===2) attr='<span style="color:#0ecb81;font-weight:600">TP2</span>';
-    else if (t.tp_order===3) attr='<span style="color:#0ecb81;font-weight:600">TP3</span>';
-    else if (t.tp_order===0) attr='<span style="color:#f6465d;font-weight:600">SL</span>';
-
-    html += '<tr><td style="font-weight:600">'+esc(t.symbol)+'</td>'+
-      '<td><span style="color:'+sideClr+';font-weight:600">'+side+'</span></td>'+
-      '<td style="text-align:right;font-weight:600">'+pnlStr+'</td>'+
-      '<td style="text-align:center">'+attr+'</td>'+
-      '<td style="color:#8b949e;font-size:10px">'+(t.close_time?fmtTime(t.close_time):'')+'</td></tr>';
-  }
-
-  html += '</tbody></table></div></div>';
   return html;
 }
 
 function renderFooter() {
-  return '<div class="footer">LE VAN DO® · 每 '+FETCH_INTERVAL/1000+'s 刷新 · '+
-    '<a href="/health" style="color:#58a6ff;text-decoration:none">/health</a> · '+
-    '<a href="/api/status" style="color:#58a6ff;text-decoration:none">/api/status</a></div>';
+  return '<div class="footer">🌤️ HighTempTation 天气预测交易机器人 · 每 '+FETCH_INTERVAL/1000+'s 刷新 · '+
+    '<a href="/api/status" style="color:#58a6ff;text-decoration:none">API</a></div>';
 }
 
 // =========== MAIN ===========
 function renderDashboard(d) {
-  const h = renderHeader(d) + renderStats(d) + renderChart(d) + renderSignals(d) + renderPositions(d) + renderMisc(d) + renderClosed(d) + renderFooter();
+  const h = renderHeader(d) + renderStats(d) + renderForecasts(d) + renderOpenPositions(d) + renderClosedTrades(d) + renderSystem(d) + renderFooter();
   document.getElementById('app').innerHTML = h;
-  drawChart(d);
 }
 
 async function refresh() {
   const d = await fetchData();
-  if (!d) {
-    document.getElementById('app').innerHTML =
-      '<div class="container"><div class="empty-state" style="padding:60px 20px">'+
-      '<div class="icon">⚠️</div><div class="text">无法连接服务器</div></div></div>';
+  if (!d || !d.weather) {
+    // Check if we have any data at all
+    if (!d) {
+      document.getElementById('app').innerHTML =
+        '<div class="container"><div class="empty-state" style="padding:60px 20px">'+
+        '<div class="icon">⚠️</div><div class="text">无法连接服务器</div></div></div>';
+    } else {
+      document.getElementById('app').innerHTML =
+        '<div class="container">'+
+        renderHeader(d) +
+        '<div class="card"><div class="card-title">🌤️ 天气数据</div>'+
+        '<div class="empty-state"><div class="icon">📡</div><div class="text">天气预测数据库未连接</div>'+
+        '<p style="color:#8b949e;font-size:11px;margin-top:6px">请确认 HighTempTation bot 已运行，SQLite DB 可访问</p></div></div>'+
+        renderSystem(d) + renderFooter() + '</div>';
+    }
     return;
   }
   document.getElementById('loading').style.display = 'none';
