@@ -244,16 +244,6 @@ function normaliseApiData(d) {
   }
 }
 
-  return {
-    capital,
-    total_pnl: totalPnl,
-    open_count: positions.length,
-    open,
-    recent_closed: recentClosed,
-    raw: d, // 原生数据保留供扩展
-  };
-}
-
 /* ================================================================== */
 function $(s) { return document.querySelector(s); }
 
@@ -338,7 +328,9 @@ function drawChart(d) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
 
-  if (ch.length < 2) {
+  // 过滤无效数据点，防止 Invalid Date 崩溃
+  const valid = ch.filter(p => p && p.t && p.e != null);
+  if (valid.length < 2) {
     if (equityChart) { equityChart.destroy(); equityChart=null; }
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle='#484f58'; ctx.font='13px sans-serif'; ctx.textAlign='center';
@@ -346,8 +338,8 @@ function drawChart(d) {
     return;
   }
 
-  const labels = ch.map(p=>new Date(p.t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));
-  const data = ch.map(p=>p.e);
+  const labels = valid.map(p=>{ try { return new Date(p.t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}); } catch(e) { return ''; }});
+  const data = valid.map(p=>p.e);
   const startVal = data[0], endVal = data[data.length-1];
   const isUp = endVal >= startVal;
   const lineColor = isUp ? '#0ecb81' : '#f6465d';
