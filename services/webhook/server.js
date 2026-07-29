@@ -589,7 +589,7 @@ app.post('/webhook', async (req, res) => {
 
 // ======== 仪表板页面 ========
 
-const DASHBOARD_HTML_PATH = join(__dirname, 'dashboard.html');
+const DASHBOARD_HTML_PATH = join(__dirname, '../../tools/hightemptation_live/dashboard.html');
 let DASHBOARD_HTML_CACHE = '';
 
 /**
