@@ -919,6 +919,10 @@ class OkxTradingBot:
         self._load_closed_trades()
         self._last_positions_snapshot: Dict[str, dict] = {}  # {symbol: {"qty": float, "entry_price": float}}
 
+        # 资金历史曲线（供仪表板 Chart.js 使用）
+        # 每 3 秒追加一次 equity 快照
+        self.capital_history: List[dict] = []  # [{t: timestamp_ms, e: equity}]
+
     # ---- 策略信号回调 ----
 
     def _on_strategy_signal(self, symbol: str, signal: SignalType, tp_sl: TpSlLevels):
@@ -1373,6 +1377,13 @@ class OkxTradingBot:
                 closed_count = len(self.closed_trades)
                 total_closed_pnl = sum(t.get("pnl", 0) or 0 for t in self.closed_trades)
 
+                # 追加资金历史（保留最多 500 点，按时间去重）
+                now_ms = int(time.time() * 1000)
+                if not self.capital_history or self.capital_history[-1]["t"] < now_ms - 2000:
+                    self.capital_history.append({"t": now_ms, "e": round(equity, 2)})
+                    if len(self.capital_history) > 500:
+                        self.capital_history = self.capital_history[-500:]
+
                 status = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "running": self._running,
@@ -1392,6 +1403,7 @@ class OkxTradingBot:
                     "signal_queue": recent_signals,
                     "symbols": symbols_state,
                     "positions": positions_list,
+                    "capital_history": self.capital_history[-200:],
                 }
 
                 tmp = self._status_file + ".tmp"
@@ -1528,6 +1540,7 @@ class OkxTradingBot:
                 "closed_trades": self.closed_trades[-20:],
                 "symbols": symbols_state,
                 "positions": positions_list,
+                "capital_history": self.capital_history[-200:],
             }
 
             with open(self._status_file, "w") as f:

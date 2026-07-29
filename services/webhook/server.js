@@ -486,6 +486,7 @@ app.get('/api/status', async (_req, res) => {
       equity: botEquity,
     },
     system: systemInfo,
+    capital_history: botStatus ? (botStatus.capital_history || []) : [],
     config: {
       baseTimeframe: '15m',
       tfMult: 18,
