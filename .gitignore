@@ -17,6 +17,10 @@ Thumbs.db
 logs/
 *.log
 
+# Generated strategies (LLM Strategy Engine outputs)
+generated_strategies/
+!generated_strategies/.gitkeep
+
 # Check state cache
 .check-state.json
 
