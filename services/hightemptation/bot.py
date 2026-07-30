@@ -9,16 +9,23 @@ HighTempTation 天氣預報校準套利 Bot (單文件合併版)
   4. 當 p_market - p_model ≥ 0.15 且 p_market 在 30-90¢ → 買 NO
   5. 倉位 $300-500，NO 漲到 98-99¢ 賣出或持有到結算
 
+增強功能:
+  🪜 溫度階梯套利 — 當主桶信號觸發時自動掃描相鄰桶並批量掛單
+  🌐 多模型集成預報 — ECMWF/GFS/ICON 加權 CDF 概率平均
+  📊 集成概率取最小值（更保守）— 降低假信號風險
+
 模塊:
   1. 結算站對照表 — 城市→ICAO 坐標
-  2. Open-Meteo 預報 — 站點級別最高溫
-  3. 偏差校正 — BIAS_CACHE 可配置
-  4. METAR 實際值 — aviationweather.gov
-  5. 市場解析 — 正則提取城市/日期/溫度檔
-  6. 高斯概率 — bucket_prob()
-  7. 出場邏輯 — 0.98 快速兌現 / 接近結算鎖利 / 強制平倉 / 止損
-  8. 持倉追蹤 — open_positions + closed_trades + realized_pnl
-  9. 主循環 — 掃描→開倉→監控→出場→統計
+  2. Open-Meteo 預報 — 站點級別最高溫（多模型）
+  3. 集成概率 — ensemble_prob() 加權平均
+  4. 溫度階梯 — 主信號相鄰桶自動擴散
+  5. 偏差校正 — BIAS_CACHE 可配置
+  6. METAR 實際值 — aviationweather.gov
+  7. 市場解析 — 正則提取城市/日期/溫度檔
+  8. 高斯概率 — bucket_prob()
+  9. 出場邏輯 — 0.98 快速兌現 / 接近結算鎖利 / 強制平倉 / 止損
+  10. 持倉追蹤 — open_positions + closed_trades + realized_pnl
+  11. 主循環 — 掃描→開倉→監控→出場→統計
 
 參考開源:
   - BallesJr/polymarket-weather-edge
@@ -72,6 +79,54 @@ def bucket_prob(lower: float, upper: float, mu: float, sigma: float) -> float:
     if sigma <= 0:
         return 1.0 if lower <= mu < upper else 0.0
     return max(0.0, min(1.0, _gaussian_cdf((upper - mu) / sigma) - _gaussian_cdf((lower - mu) / sigma)))
+
+
+def ensemble_prob(models: dict[str, float], weights: list[float],
+                  lower: float, upper: float, bias_correction: float = 0.0) -> float:
+    """
+    多模型集成概率平均：对每个模型独立计算 bucket_prob，然后加权平均。
+
+    比先平均温度再算概率更鲁棒 —— 极端模型不会污染整体概率。
+
+    Args:
+        models: {model_name: temperature_mean}
+        weights: 与 models 顺序对应的权重列表
+        lower/upper: 温度桶边界
+        bias_correction: 偏差校正值
+
+    Returns:
+        加权平均后的 P(temp in bucket)
+    """
+    model_temps = list(models.values())
+    if not model_temps:
+        return 0.0
+
+    # 用所有模型温度计算 sigma（模型间标准差表示预报不确定性）
+    mu = sum(model_temps) / len(model_temps) - bias_correction
+    if len(model_temps) > 1:
+        sigma = math.sqrt(sum((t - mu - bias_correction) ** 2 for t in model_temps) / len(model_temps))
+    else:
+        sigma = 2.0
+    if sigma < 0.5:
+        sigma = 2.0  # 最小不确定性垫底
+
+    # 原方法：用平均温度直接算概率
+    direct_prob = bucket_prob(lower, upper, mu, sigma)
+
+    # 如果用权重且模型数与权重一致，做加权平均
+    if len(weights) == len(model_temps) and len(model_temps) > 1:
+        total_w = sum(weights)
+        if total_w > 0:
+            weighted_prob = 0.0
+            for i, temp in enumerate(model_temps):
+                corrected_temp = temp - bias_correction
+                prob_i = bucket_prob(lower, upper, corrected_temp, sigma)
+                weighted_prob += weights[i] * prob_i
+            weighted_prob /= total_w
+            # 混合：80% 加权 + 20% 直接（防止极端权重过拟合）
+            return 0.8 * weighted_prob + 0.2 * direct_prob
+
+    return direct_prob
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -172,7 +227,7 @@ class Config:
         self.ARCHIVE_API = os.getenv("ARCHIVE_API", "https://archive-api.open-meteo.com/v1/archive")
 
         self.FORECAST_DAYS = int(os.getenv("FORECAST_DAYS", "7"))
-        self.WEATHER_MODELS = os.getenv("WEATHER_MODELS", "best_match,icon_seamless,gfs_seamless,gem_seamless,jma_seamless").split(",")
+        self.WEATHER_MODELS = os.getenv("WEATHER_MODELS", "best_match,ecmwf_seamless,gfs_seamless,icon_seamless,gem_seamless,jma_seamless").split(",")
         self.DEFAULT_SIGMA = float(os.getenv("DEFAULT_SIGMA", "2.0"))
 
         self.CALIB_THRESH = float(os.getenv("CALIB_THRESHOLD", "0.15"))
@@ -183,12 +238,29 @@ class Config:
         self.POS_MAX = float(os.getenv("POSITION_MAX_USD", "1"))  # 固定 $1 超小注測信號
         self.POS_CAP_PCT = float(os.getenv("POSITION_CAPITAL_PCT", "0.02"))
         self.NO_EXIT_TARGET = float(os.getenv("NO_EXIT_TARGET", "0.98"))
-        self.QUICK_PROFIT_PCT = float(os.getenv("QUICK_PROFIT_PCT", "0.05"))  # 漲 5% 就出
-        self.STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.50"))
+        self.QUICK_PROFIT_PCT = float(os.getenv("QUICK_PROFIT_PCT", "0.05"))  # 快速止盈 +5%
+        self.FIXED_TAKE_PROFIT_PCT = float(os.getenv("FIXED_TAKE_PROFIT_PCT", "0.09"))  # 固定止盈 +9%
+        self.STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.065"))  # 止損 -6.5%
+        self.TRAILING_ACTIVATE_PCT = float(os.getenv("TRAILING_ACTIVATE_PCT", "0.05"))  # 移動止盈激活: 浮盈 5%
+        self.TRAILING_RETRACE_PCT = float(os.getenv("TRAILING_RETRACE_PCT", "0.03"))  # 移動止盈回撤: 3% 平倉
+        self.TIME_STOP_HOURS = int(os.getenv("TIME_STOP_HOURS", "24"))  # 時間止損 24h
+        self.THETA_ENABLED = os.getenv("THETA_ENABLED", "true").lower() == "true"  # Theta 懲罰開關
+        self.OBI_ENABLED = os.getenv("OBI_ENABLED", "true").lower() == "true"  # OBI 過濾開關
+        self.OBI_MIN_IMBALANCE = float(os.getenv("OBI_MIN_IMBALANCE", "0.3"))  # OBI 最小不均衡閾值
+        self.TRADE_START_HOUR = int(os.getenv("TRADE_START_HOUR", "12"))  # 交易窗口起始 (UTC)
+        self.TRADE_END_HOUR = int(os.getenv("TRADE_END_HOUR", "20"))  # 交易窗口結束 (UTC)
         self.FORCE_EXIT_HOURS = int(os.getenv("FORCE_EXIT_HOURS", "4"))
         self.FORCE_EXIT_MIN_PROFIT = float(os.getenv("FORCE_EXIT_MIN_PROFIT", "0.05"))
 
         self.MAX_POS_PER_CITY_DAY = int(os.getenv("MAX_POS_PER_CITY_DAY", "2"))
+        self.LADDER_ENABLED = os.getenv("LADDER_ENABLED", "true").lower() == "true"
+        self.LADDER_SPREAD = int(os.getenv("LADDER_SPREAD", "1"))       # 两侧各 N 个相邻桶
+        self.LADDER_EDGE_BOOST = float(os.getenv("LADDER_EDGE_BOOST", "1.3"))  # 阶梯桶 edge 乘数
+        self.LADDER_SIZE_PCT = float(os.getenv("LADDER_SIZE_PCT", "0.5"))       # 阶梯桶仓位比例
+        self.ENSEMBLE_ENABLED = os.getenv("ENSEMBLE_ENABLED", "true").lower() == "true"
+        self.ENSEMBLE_MODELS = os.getenv("ENSEMBLE_MODELS", "ecmwf_seamless,gfs_seamless,icon_seamless").split(",")
+        raw_weights = os.getenv("ENSEMBLE_WEIGHTS", "0.4,0.3,0.3")
+        self.ENSEMBLE_WEIGHTS = [float(w) for w in raw_weights.split(",")]
         self.MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "50"))
         self.MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
 
@@ -227,7 +299,7 @@ def reload_config():
     # 保留原有值不受 env 影響的字段
     logger.info(f"♻️ 配置熱更新: 倉位 ${cfg.POS_MIN:.0f}-${cfg.POS_MAX:.0f} | "
                 f"最大持倉 {cfg.MAX_CONCURRENT} | "
-                f"快盈 {cfg.QUICK_PROFIT_PCT*100:.0f}% | "
+                f"快盈+{cfg.QUICK_PROFIT_PCT*100:.0f}% 固定止盈+{cfg.FIXED_TAKE_PROFIT_PCT*100:.0f}% 止損-{cfg.STOP_LOSS_PCT*100:.1f}% | "
                 f"閾值 {cfg.CALIB_THRESH*100:.0f}%")
     return cfg
 
@@ -585,6 +657,14 @@ async def scan_markets(http: httpx.AsyncClient) -> list[dict]:
 
             liquidity = float(str(m.get("liquidity", "0") or "0"))
 
+            # 提取 token ID 用於 OBI 查詢
+            tokens = m.get("tokens", [])
+            no_token_id = ""
+            for t in tokens:
+                if t.get("outcome", "").upper() == "NO":
+                    no_token_id = str(t.get("token_id", ""))
+                    break
+
             parsed.append({
                 "id": str(m.get("conditionId", "") or m.get("id", "")),
                 "question": q,
@@ -592,6 +672,7 @@ async def scan_markets(http: httpx.AsyncClient) -> list[dict]:
                 "liquidity": liquidity,
                 "closed": bool(m.get("closed", False)),
                 "end_date": m.get("endDate", ""),
+                "no_token_id": no_token_id,
             })
         except Exception:
             continue
@@ -626,9 +707,13 @@ class Position:
         self.exit_time = ""
         self.realized = 0.0
         self._settled = False
+        self.peak_no = entry_no
+        self.entry_time = datetime.now(timezone.utc).isoformat()
 
     def update(self, no_price: float):
         self.curr_no = no_price
+        if no_price > self.peak_no:
+            self.peak_no = no_price
         if self.entry_no > 0:
             self.pct = (no_price - self.entry_no) / self.entry_no
             self.pnl = self.size * self.pct
@@ -726,14 +811,23 @@ class Engine:
                 p.update(pmap[p.market_id])
 
     def check_exit(self) -> int:
-        """快速止盈 → 目標止盈 → 止損 → 強制平倉, return 平倉數"""
+        """
+        增強出場規則 (按優先級):
+          1. 快速止盈 +5%
+          2. 固定止盈 +9%
+          3. 移動止盈 (浮盈 5% 後啟動, 回撤 3% 平倉)
+          4. 目標止盈 NO ≥ 0.98
+          5. 止損 -6.5%
+          6. 時間止損 24h
+          7. 強制平倉 (距結算 < N 小時且有利潤)
+        """
         now = datetime.now(timezone.utc)
         n = 0
 
         for p in list(self.positions):
             if not p.is_open: continue
 
-            # 快速止盈（最高優先）: 漲幅 ≥ 5% 就出，保本第一
+            # ── 1. 快速止盈 +5% (最高優先, 保本第一) ──
             quick_profit = p.entry_no * (1 + cfg.QUICK_PROFIT_PCT)
             if p.curr_no >= quick_profit:
                 prof = p.size * cfg.QUICK_PROFIT_PCT
@@ -742,7 +836,27 @@ class Engine:
                 n += 1
                 continue
 
-            # 目標止盈 NO ≥ 0.98
+            # ── 2. 固定止盈 +9% ──
+            fixed_target = p.entry_no * (1 + cfg.FIXED_TAKE_PROFIT_PCT)
+            if p.curr_no >= fixed_target:
+                prof = p.size * (p.curr_no / p.entry_no - 1)
+                p.close(f"固定止盈+{cfg.FIXED_TAKE_PROFIT_PCT*100:.0f}% ${p.entry_no:.3f}→${p.curr_no:.3f}", prof)
+                self._settle(p, prof)
+                n += 1
+                continue
+
+            # ── 3. 移動止盈 (浮盈 ≥5% 後啟動, 從峰頂回撤 3% 平倉) ──
+            activate_threshold = p.entry_no * (1 + cfg.TRAILING_ACTIVATE_PCT)
+            if p.peak_no >= activate_threshold:
+                retrace_price = p.peak_no * (1 - cfg.TRAILING_RETRACE_PCT)
+                if p.curr_no <= retrace_price:
+                    prof = p.size * (p.curr_no / p.entry_no - 1)
+                    p.close(f"移動止盈 峰{round(p.peak_no,4)}回撤{cfg.TRAILING_RETRACE_PCT*100:.0f}%→{round(p.curr_no,4)}", prof)
+                    self._settle(p, prof)
+                    n += 1
+                    continue
+
+            # ── 4. 目標止盈 NO ≥ 0.98 ──
             if p.curr_no >= cfg.NO_EXIT_TARGET:
                 prof = p.size * (p.curr_no / p.entry_no - 1)
                 p.close(f"NO≥{cfg.NO_EXIT_TARGET:.2f} ${p.entry_no:.3f}→${p.curr_no:.3f}", prof)
@@ -750,15 +864,30 @@ class Engine:
                 n += 1
                 continue
 
-            # 止損 NO ≤ entry * stop_pct
-            if p.curr_no <= p.entry_no * cfg.STOP_LOSS_PCT:
-                loss = -p.size * 0.5
-                p.close(f"止損 ${p.entry_no:.3f}→${p.curr_no:.3f}", loss)
+            # ── 5. 止損 -6.5% (entry 跌 6.5%) ──
+            stop_price = p.entry_no * (1 - cfg.STOP_LOSS_PCT)
+            if p.curr_no <= stop_price:
+                loss = p.size * (p.curr_no / p.entry_no - 1)
+                p.close(f"止損-{cfg.STOP_LOSS_PCT*100:.1f}% ${p.entry_no:.3f}→${p.curr_no:.3f}", loss)
                 self._settle(p, loss)
                 n += 1
                 continue
 
-            # 強制平倉（距結算 < N 小時且有利潤）
+            # ── 6. 時間止損 24h ──
+            if p.entry_time:
+                try:
+                    entry_dt = datetime.fromisoformat(p.entry_time)
+                    age_hours = (now - entry_dt).total_seconds() / 3600
+                except Exception:
+                    age_hours = 0
+                if age_hours >= cfg.TIME_STOP_HOURS:
+                    prof = p.size * (p.curr_no / p.entry_no - 1)
+                    p.close(f"時間止損 {cfg.TIME_STOP_HOURS}h到 NO={p.curr_no:.4f}", prof)
+                    self._settle(p, prof)
+                    n += 1
+                    continue
+
+            # ── 7. 強制平倉（距結算 < N 小時且有利潤） ──
             if p.end_date:
                 try:
                     ed = datetime.fromisoformat(p.end_date.replace("Z", "+00:00"))
@@ -812,6 +941,36 @@ class Engine:
         self.capital_history.append((datetime.now(timezone.utc).isoformat(), self.capital))
         p._settled = True
         logger.info(f"  ✅ 平倉 [{p.city} {p.bucket_label}] P&L=${pnl:.2f} | {p.exit_reason}")
+
+    @staticmethod
+    def calc_theta_multiplier(end_date_str: str) -> float:
+        """
+        根據距離結算天數計算 Theta 懲罰倍數。
+        距結算越近 edge 門檻越高，防止臨近結算時被波動收割。
+        """
+        if not end_date_str:
+            return 1.0
+        try:
+            ed = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+            days_left = (ed - datetime.now(timezone.utc)).total_seconds() / 86400
+            if days_left >= 7:
+                return 1.0       # ≥7 天: 無懲罰
+            elif days_left >= 3:
+                return 1.2       # 3-7 天: +20%
+            elif days_left >= 1:
+                return 1.5       # 1-3 天: +50%
+            elif days_left > 0:
+                return 2.0       # <1 天: 翻倍
+            else:
+                return 3.0       # 已過期: 三倍
+        except Exception:
+            return 1.0
+
+    @staticmethod
+    def in_trading_window() -> bool:
+        """UTC 時間窗口檢查 (預設 12-20 UTC)"""
+        now_hour = datetime.now(timezone.utc).hour
+        return cfg.TRADE_START_HOUR <= now_hour < cfg.TRADE_END_HOUR
 
     def should_pause(self) -> bool:
         if sum(1 for p in self.positions if p.is_open) >= cfg.MAX_CONCURRENT:
@@ -926,6 +1085,36 @@ def start_dashboard():
 # 主循環
 # ═══════════════════════════════════════════════════════════════════════
 
+async def _check_single_obi(http: httpx.AsyncClient, sig: dict) -> Optional[bool]:
+    """
+    檢查單個信號的 OBI (Order Book Imbalance)。
+    返回 True=通過, False=阻擋, None=無法判斷(不阻擋)。
+    """
+    if not cfg.OBI_ENABLED:
+        return True
+    token_id = sig.get("no_token_id", "")
+    if not token_id:
+        return None
+    try:
+        r = await http.get(f"https://clob.polymarket.com/book/{token_id}", timeout=10)
+        r.raise_for_status()
+        book = r.json()
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+        bid_vol = sum(float(b.get("size", 0)) for b in bids[:10])
+        ask_vol = sum(float(a.get("size", 0)) for a in asks[:10])
+        total = bid_vol + ask_vol
+        if total == 0:
+            return None
+        obi = (bid_vol - ask_vol) / total
+        cid_short = sig.get("market_id", "")[:8]
+        logger.debug(f"  📊 OBI {sig['city']} {cid_short}: {obi:.2f} (b={bid_vol:.0f} a={ask_vol:.0f})")
+        return obi >= cfg.OBI_MIN_IMBALANCE
+    except Exception as e:
+        logger.debug(f"OBI 失敗 {sig.get('market_id','')[:8]}: {e}")
+        return None
+
+
 async def main():
     global _engine, _weather, _latest_signals, _latest_analyses, _last_scan
 
@@ -933,7 +1122,18 @@ async def main():
     logger.info("🌡️ HighTempTation Bot 啟動")
     logger.info(f"  DRY_RUN={cfg.DRY_RUN} | 間隔={cfg.SCAN_INTERVAL_SEC}s | 資金=${cfg.INITIAL_CAPITAL}")
     logger.info(f"  門檻: P_mkt-P_model ≥ {cfg.CALIB_THRESH*100:.0f}% | P_mkt ∈ [{cfg.MIN_YES*100:.0f}¢,{cfg.MAX_YES*100:.0f}¢]")
-    logger.info(f"  倉位: ${cfg.POS_MIN:.0f}-${cfg.POS_MAX:.0f} | 止盈 NO≥{cfg.NO_EXIT_TARGET:.2f}")
+    logger.info(f"  倉位: ${cfg.POS_MIN:.0f}-${cfg.POS_MAX:.0f} | "
+                f"止盈: 快盈+{cfg.QUICK_PROFIT_PCT*100:.0f}% 固定+{cfg.FIXED_TAKE_PROFIT_PCT*100:.0f}% 移動激活+{cfg.TRAILING_ACTIVATE_PCT*100:.0f}%回撤{cfg.TRAILING_RETRACE_PCT*100:.0f}% | "
+                f"止損: 硬-{cfg.STOP_LOSS_PCT*100:.1f}% 時間{cfg.TIME_STOP_HOURS}h | "
+                f"NO≥{cfg.NO_EXIT_TARGET:.2f}")
+    logger.info(f"  Theta懲罰={'ON' if cfg.THETA_ENABLED else 'OFF'} | "
+                f"OBI過濾={'ON' if cfg.OBI_ENABLED else 'OFF'} 閾值{cfg.OBI_MIN_IMBALANCE:.1f} | "
+                f"交易窗口 UTC {cfg.TRADE_START_HOUR}-{cfg.TRADE_END_HOUR}")
+    logger.info(f"  🪜溫度階梯={'ON' if cfg.LADDER_ENABLED else 'OFF'} 擴散{cfg.LADDER_SPREAD}桶 edge乘{cfg.LADDER_EDGE_BOOST:.1f} 倉位{cfg.LADDER_SIZE_PCT*100:.0f}%")
+    if cfg.ENSEMBLE_ENABLED:
+        logger.info(f"  🌐集成預報={'ON' if cfg.ENSEMBLE_ENABLED else 'OFF'} 模型={cfg.ENSEMBLE_MODELS} 權重={cfg.ENSEMBLE_WEIGHTS}")
+    else:
+        logger.info(f"  🌐集成預報=OFF")
     logger.info(f"  預設站點: {len(STATION_IDX)} 個 + 動態 geocode 其他城市")
     logger.info("=" * 60)
 
@@ -1026,11 +1226,23 @@ async def main():
                 await asyncio.sleep(cfg.SCAN_INTERVAL_SEC)
                 continue
 
-            # ── 8. 校準分析 ──
+            # ── 8. 校準分析 + 集成概率 + 溫度階梯 ──
             signals = []
             analyses = []
+            ladder_signals = []
             parsed_count = 0
             matched_fc_count = 0
+            ensemble_count = 0
+
+            # 構建市場索引: (city_lower, date, bucket_label) → market
+            # 用於快速查找相鄰桶對應的真實市場
+            market_idx: dict[tuple[str, str, str], dict] = {}
+            for m in markets:
+                pq = parse_market_question(m["question"])
+                if pq:
+                    key = (pq["city"].lower(), pq["date"], pq["label"])
+                    market_idx[key] = m
+
             for m in markets:
                 if _engine.has_position(m["id"]):
                     continue
@@ -1051,6 +1263,8 @@ async def main():
 
                 mu = fc["mean"]
                 sigma = fc["sigma"]
+                models_raw = fc.get("models", {})
+                bias_corr = fc.get("bias_correction", 0.0)
 
                 # 溫度合理性檢查：跳過 °F 或離譜值
                 q_lower = m["question"].lower()
@@ -1060,27 +1274,75 @@ async def main():
                 if temp_val > 50 and parsed["city"] not in ("Dubai", "Mumbai", "Bangkok", "Singapore"):
                     continue
 
-                # 單閾值 vs 範圍的 p_model 計算
+                # ── 集成概率 (ECMWF/GFS/ICON 加權平均) ──
+                p_model_direct = None
+                p_model_ensemble = None
+
+                # 方法 A: 直接預報均值法（現有邏輯）
                 if "threshold" in parsed:
                     z = (parsed["threshold"] - mu) / sigma
                     if parsed["dir"] == "below":
-                        p_model = _gaussian_cdf(z)  # P(temp ≤ threshold)
-                    else:  # above
-                        p_model = 1 - _gaussian_cdf(z)  # P(temp ≥ threshold)
+                        p_model_direct = _gaussian_cdf(z)
+                    else:
+                        p_model_direct = 1 - _gaussian_cdf(z)
                 else:
-                    p_model = bucket_prob(parsed["lower"], parsed["upper"], mu, sigma)
+                    p_model_direct = bucket_prob(parsed["lower"], parsed["upper"], mu, sigma)
+
+                # 方法 B: 集成概率法（多模型加權 CDF 平均）
+                if cfg.ENSEMBLE_ENABLED and models_raw and len(cfg.ENSEMBLE_WEIGHTS) > 0:
+                    # 從 models_raw 中提取指定的集成模型
+                    ens_models = {}
+                    for em in cfg.ENSEMBLE_MODELS:
+                        if em in models_raw:
+                            ens_models[em] = models_raw[em]
+                    if len(ens_models) >= 2:
+                        if "threshold" in parsed:
+                            # 單閾值場景：對每個模型算概率
+                            ens_temps = list(ens_models.values())
+                            ens_mu = sum(ens_temps) / len(ens_temps) - bias_corr
+                            ens_sigma = math.sqrt(sum((t - ens_mu - bias_corr) ** 2 for t in ens_temps) / len(ens_temps)) if len(ens_temps) > 1 else sigma
+                            if ens_sigma < 0.5:
+                                ens_sigma = sigma
+                            z = (parsed["threshold"] - ens_mu) / ens_sigma
+                            if parsed["dir"] == "below":
+                                p_model_ensemble = _gaussian_cdf(z)
+                            else:
+                                p_model_ensemble = 1 - _gaussian_cdf(z)
+                        else:
+                            p_model_ensemble = ensemble_prob(
+                                ens_models, cfg.ENSEMBLE_WEIGHTS,
+                                parsed["lower"], parsed["upper"], bias_corr)
+                        ensemble_count += 1
+
+                # 使用更保守的概率：p_model 越小 diff 越大，信號越強
+                # 取 p_model 較小的那個（更保守 = 更高的 edge）
+                if p_model_ensemble is not None:
+                    p_model = min(p_model_direct, p_model_ensemble)
+                    p_model_src = "集成" if p_model_ensemble < p_model_direct else "直接"
+                else:
+                    p_model = p_model_direct
+                    p_model_src = "直接"
 
                 p_market = m["yes_price"]
                 diff = p_market - p_model
 
+                # Theta 懲罰: 距結算越近，edge 門檻越高
+                theta_mult = Engine.calc_theta_multiplier(m.get("end_date", "")) if cfg.THETA_ENABLED else 1.0
+                effective_thresh = cfg.CALIB_THRESH * theta_mult
+
                 analyses.append({
                     "city": parsed["city"], "bucket": parsed["label"],
                     "date": parsed["date"], "mu": mu, "sigma": sigma,
-                    "p_model": p_model, "p_market": p_market, "diff": diff,
+                    "p_model": p_model, "p_model_direct": p_model_direct,
+                    "p_model_ensemble": p_model_ensemble,
+                    "p_market": p_market, "diff": diff,
                     "no_price": m["no_price"],
+                    "theta_mult": theta_mult,
+                    "model_src": p_model_src if p_model_ensemble else "direct",
                 })
 
-                if diff >= cfg.CALIB_THRESH and cfg.MIN_YES <= p_market <= cfg.MAX_YES:
+                is_primary = diff >= effective_thresh and cfg.MIN_YES <= p_market <= cfg.MAX_YES
+                if is_primary:
                     sig = {
                         "market_id": m["id"], "city": parsed["city"],
                         "bucket": parsed["label"], "date": parsed["date"],
@@ -1090,48 +1352,167 @@ async def main():
                         "diff": round(diff, 4),
                         "no_price": round(m["no_price"], 4),
                         "end_date": m.get("end_date", ""),
+                        "theta_mult": theta_mult,
+                        "no_token_id": m.get("no_token_id", ""),
+                        "is_ladder": False,
+                        "ladder_parent": None,
                     }
-                    # 調試日誌：打印每個分析結果
-                    logger.info(f"  📐 {parsed['city']} {parsed['label']}: μ={mu:.1f} σ={sigma:.1f} model={p_model:.1%} mkt={p_market:.1%} diff={diff:+.1%} -> {'🟢 信號' if diff >= cfg.CALIB_THRESH and cfg.MIN_YES <= p_market <= cfg.MAX_YES else '⚪ 不夠'}")
+                    logger.info(f"  🟢 {parsed['city']} {parsed['label']}: μ={mu:.1f} σ={sigma:.1f} "
+                                f"model={p_model:.1%}({p_model_src}) mkt={p_market:.1%} "
+                                f"diff={diff:+.1%} θx{theta_mult:.1f} → NO@{m['no_price']:.4f}")
                     signals.append(sig)
-                    logger.info(f"  📊 {parsed['city']} {parsed['label']}: model={p_model:.1%} mkt={p_market:.1%} diff={diff:+.1%} → NO@{m['no_price']:.4f}")
+                else:
+                    logger.info(f"  ⚪ {parsed['city']} {parsed['label']}: μ={mu:.1f} σ={sigma:.1f} "
+                                f"model={p_model:.1%}({p_model_src}) mkt={p_market:.1%} "
+                                f"diff={diff:+.1%} θx{theta_mult:.1f} {'(edge不足)' if diff < effective_thresh else '(價格區間外)'}")
 
-            logger.info(f"  🔍 分析: {len(markets)}市場 → {parsed_count}可解析 → {matched_fc_count}有預報 → {len(signals)}信號")
+            # ── 溫度階梯：為主信號生成相鄰桶信號 ──
+            if cfg.LADDER_ENABLED and signals:
+                for sig in signals:
+                    if sig.get("is_ladder"):
+                        continue  # 階梯信號不再產生子階梯
+                    city = sig["city"]
+                    dt = sig["date"]
+                    # 找到當前桶在 cfg.buckets 中的索引
+                    bucket_idx = -1
+                    for i, (lo, hi, lbl) in enumerate(cfg.buckets):
+                        if lbl == sig["bucket"]:
+                            bucket_idx = i
+                            break
+                    if bucket_idx < 0:
+                        continue
+
+                    # 向兩側擴展 LADDER_SPREAD 個相鄰桶
+                    for side in range(-cfg.LADDER_SPREAD, cfg.LADDER_SPREAD + 1):
+                        if side == 0:
+                            continue
+                        adj_idx = bucket_idx + side
+                        if adj_idx < 0 or adj_idx >= len(cfg.buckets):
+                            continue
+                        lo, hi, lbl = cfg.buckets[adj_idx]
+
+                        # 在市場索引中查找該鄰桶的真實市場
+                        mkt_key = (city.lower(), dt, lbl)
+                        adj_market = market_idx.get(mkt_key)
+                        if not adj_market:
+                            logger.debug(f"    ⏭️ 階梯 {lbl}: 無對應市場")
+                            continue
+
+                        # 防重複: 已持倉或已平倉
+                        adj_mid = adj_market["id"]
+                        if _engine.has_position(adj_mid):
+                            continue
+
+                        # 用相同 mu/sigma 計算相鄰桶的概率
+                        p_model_adj = bucket_prob(lo, hi, sig["mu"], sig["sigma"])
+                        p_market_adj = adj_market["yes_price"]
+                        diff_adj = p_market_adj - p_model_adj
+
+                        # 階梯桶使用更高的 edge 門檻
+                        ladder_thresh = effective_thresh * cfg.LADDER_EDGE_BOOST
+                        theta_mult_adj = Engine.calc_theta_multiplier(adj_market.get("end_date", "")) if cfg.THETA_ENABLED else 1.0
+
+                        analyses.append({
+                            "city": city, "bucket": lbl,
+                            "date": dt, "mu": sig["mu"], "sigma": sig["sigma"],
+                            "p_model": p_model_adj,
+                            "p_market": p_market_adj, "diff": diff_adj,
+                            "no_price": adj_market["no_price"],
+                            "theta_mult": theta_mult_adj,
+                            "model_src": "ladder",
+                        })
+
+                        if diff_adj >= ladder_thresh and cfg.MIN_YES <= p_market_adj <= cfg.MAX_YES:
+                            ladder_sig = {
+                                "market_id": adj_mid,
+                                "city": city,
+                                "bucket": lbl,
+                                "date": dt,
+                                "mu": sig["mu"],
+                                "sigma": sig["sigma"],
+                                "p_model": round(p_model_adj, 4),
+                                "p_market": round(p_market_adj, 4),
+                                "diff": round(diff_adj, 4),
+                                "no_price": round(adj_market["no_price"], 4),
+                                "end_date": adj_market.get("end_date", ""),
+                                "theta_mult": theta_mult_adj,
+                                "no_token_id": adj_market.get("no_token_id", ""),
+                                "is_ladder": True,
+                                "ladder_parent": sig["bucket"],
+                            }
+                            ladder_signals.append(ladder_sig)
+                            logger.info(f"  🪜 階梯 {lbl}: p_model={p_model_adj:.1%} mkt={p_market_adj:.1%} "
+                                        f"diff={diff_adj:+.1%} θx{theta_mult_adj:.1f} → NO@{adj_market['no_price']:.4f}")
+
+                if ladder_signals:
+                    logger.info(f"  🪜 溫度階梯: 主信號 {len(signals)} → 衍生 {len(ladder_signals)} 個相鄰桶信號")
+                    signals.extend(ladder_signals)
+
+            logger.info(f"  🔍 分析: {len(markets)}市場 → {parsed_count}可解析 → {matched_fc_count}有預報 "
+                        f"→ {len(signals)}信號(含階梯) | 集成概率={ensemble_count}次")
             _latest_signals = signals
             _latest_analyses = analyses
             _last_scan = datetime.now(timezone.utc).isoformat()
 
-            # ── 9. 模擬開倉，防重複 + 風控 ──
+            # ── 9. 開倉, 防重複 + 風控 + 時間窗口 + OBI 過濾 + 階梯倉位 ──
             opened = 0
-            if signals:
+            ladder_opened = 0
+            if not Engine.in_trading_window():
+                logger.info(f"  ⏰ 非交易窗口 (UTC {cfg.TRADE_START_HOUR}-{cfg.TRADE_END_HOUR})，跳過開倉")
+            elif signals:
                 for sig in signals:
-                    # Bug 1: 已在持倉或已平倉 → 跳過（含 closed_trades）
+                    # 已在持倉或已平倉 → 跳過
                     if _engine.has_position(sig["market_id"]):
                         continue
-                    # Bug 2: 冷卻期（距結算 < 60 分鐘）→ 跳過
+                    # 冷卻期 → 跳過
                     if _engine.is_on_cooldown(sig.get("end_date", "")):
                         continue
-                    # 風控：檢查並發限制
+                    # OBI 過濾
+                    if cfg.OBI_ENABLED:
+                        obi_ok = await _check_single_obi(http, sig)
+                        if obi_ok is False:
+                            logger.debug(f"  ⛔ OBI 過濾: {sig['city']} {sig['bucket']} (不均衡不足)")
+                            continue
+                    # 風控：並發限制
                     open_count = sum(1 for p in _engine.positions if p.is_open)
                     if open_count >= cfg.MAX_CONCURRENT:
                         logger.info(f"  ⏸️ 達最大並發 ({cfg.MAX_CONCURRENT})，停止開倉")
                         break
-                    # 風控：同日同城限制
-                    city_day = _engine.city_day_count(sig["city"], sig["date"])
-                    if city_day >= cfg.MAX_POS_PER_CITY_DAY:
-                        logger.debug(f"  ⏭️ {sig['city']} {sig['date']} 已 {city_day}/{cfg.MAX_POS_PER_CITY_DAY} 檔")
-                        continue
-                    size = _engine.calc_position_size(sig["diff"])
+                    # 風控：同日同城限制（階梯桶不佔用主桶配額）
+                    is_ladder = sig.get("is_ladder", False)
+                    if not is_ladder:
+                        city_day = _engine.city_day_count(sig["city"], sig["date"])
+                        if city_day >= cfg.MAX_POS_PER_CITY_DAY:
+                            logger.debug(f"  ⏭️ {sig['city']} {sig['date']} 已 {city_day}/{cfg.MAX_POS_PER_CITY_DAY} 檔")
+                            continue
+
+                    # 階梯桶倉位按比例縮小
+                    base_size = _engine.calc_position_size(sig["diff"])
+                    if is_ladder:
+                        size = max(cfg.POS_MIN, base_size * cfg.LADDER_SIZE_PCT)
+                        if size <= 10:
+                            size = round(size, 1)
+                        else:
+                            size = round(size / 10) * 10
+                    else:
+                        size = base_size
+
                     if _engine.capital < size:
                         logger.debug(f"  資金不足: ${_engine.capital:.0f} < ${size:.0f}")
                         continue
+
                     pos = _engine.open_position(
                         sig["market_id"], sig["city"], sig["date"],
                         sig["bucket"], sig["no_price"], size, sig.get("end_date", ""))
                     if pos is not None:
-                        opened += 1
-            if opened:
-                logger.info(f"  📦 本輪開倉: {opened} 筆")
+                        if is_ladder:
+                            ladder_opened += 1
+                        else:
+                            opened += 1
+
+            total_opened = opened + ladder_opened
+            if total_opened:
+                logger.info(f"  📦 本輪開倉: {total_opened} 筆 (主桶{opened} + 階梯{ladder_opened})")
 
             # ── 10. 狀態 ──
             s = _engine.summary()
