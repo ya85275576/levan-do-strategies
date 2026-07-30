@@ -2,107 +2,158 @@
 """
 HighTempTation — Streamlit 实时看板
 
-连接 SQLite，展示:
+通过 HTTP API 读取天气 Bot 数据 (http://localhost:3002/api/status)，
+展示:
   - 今日盈亏 / 胜率 / 资金曲线
-  - 持仓 / 信号 / 熔断状态
-  - 校准可靠性图 (Plotly)
+  - 持仓（city / bucket / entry_no / curr_no / pnl）
+  - 平仓记录
   - 自动 30s 刷新
 
 启动:
-  streamlit run tools/hightemptation_live/dashboard.py
-  streamlit run tools/hightemptation_live/dashboard.py --server.port 8501
+  streamlit run dashboard.py
+  streamlit run dashboard.py --server.port 8501
+
+生产 (PM2):
+  pm2 start ecosystem.dashboard.config.cjs
 
 依赖:
   pip install streamlit plotly pandas
 """
+import json
 import logging
-import math
 import os
 import sys
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+import time as _time
+from datetime import datetime, timezone
+from typing import List, Optional
+from urllib.request import urlopen, Request
 
-# 确保能导入同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import streamlit as st
     import plotly.graph_objects as go
-    import plotly.express as px
     import pandas as pd
     HAS_STREAMLIT = True
 except ImportError:
     HAS_STREAMLIT = False
 
-from db_manager import TradeDB
-from calibrator import ProbabilityCalibrator
-
 logger = logging.getLogger("dashboard")
 
-DB_PATH = os.environ.get("DB_PATH", "hightemptation.db")
+API_URL = os.environ.get("API_URL", "http://localhost:3002/api/status")
 REFRESH_SEC = 30
 
 
-def load_data(db: TradeDB) -> dict:
-    """一次性加载所有看板数据"""
+# ════════════════════════════════════════════════════════════════
+# HTTP 数据获取
+# ════════════════════════════════════════════════════════════════
+
+def fetch_api_data() -> dict:
+    """从 /api/status 获取天气 Bot 实时数据"""
+    try:
+        req = Request(API_URL, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        return data
+    except Exception as e:
+        logger.warning(f"API 请求失败: {e}")
+        return {}
+
+
+def load_data() -> dict:
+    """从 API 加载所有看板数据，映射为 dashboard 格式"""
     now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
+    raw = fetch_api_data()
 
-    # 今日统计
-    daily = db.get_daily_pnl(today)
+    if not raw:
+        return {
+            "daily_pnl": 0, "daily_trades": 0, "daily_wins": 0, "daily_losses": 0,
+            "daily_win_rate": 0, "closed_trades": [], "open_positions": [],
+            "equity_curve": [], "calibration": [],
+            "signal_count_24h": 0, "total_trades": 0,
+            "current_time": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "error": "无法连接天气 Bot API",
+        }
 
-    # 所有已平仓交易
-    closed = db.conn.execute(
-        "SELECT * FROM trades WHERE status='closed' ORDER BY exit_time DESC LIMIT 100"
-    ).fetchall()
+    # ── 持仓: 将 API 字段映射为看板列名 ──
+    open_positions = []
+    for p in raw.get("open", []):
+        open_positions.append({
+            "city": p.get("city", "--"),
+            "side": p.get("bucket", "--"),           # "37°C" 等温度桶
+            "entry_price": p.get("entry_no", 0),
+            "size": p.get("size", 0),
+            "entry_time": p.get("entry_time", ""),
+            "curr_no": p.get("curr_no", 0),
+            "pnl": p.get("pnl", 0),
+        })
 
-    # 持仓
-    open_positions = db.get_open_trades()
+    # ── 平仓 ──
+    closed_trades = []
+    for t in raw.get("recent_closed", []):
+        closed_trades.append({
+            "city": t.get("city", "--"),
+            "side": t.get("bucket", "--"),
+            "entry_price": t.get("entry_no", 0),
+            "exit_price": t.get("curr_no", 0),
+            "pnl": t.get("pnl", 0),
+            "exit_reason": t.get("exit_reason", ""),
+            "exit_time": t.get("exit_time", ""),
+        })
 
-    # 资金曲线: 按日聚合 PnL
-    equity_rows = db.conn.execute("""
-        SELECT date(exit_time) as d, SUM(pnl) as day_pnl, COUNT(*) as cnt
-        FROM trades WHERE status='closed' AND exit_time IS NOT NULL
-        GROUP BY date(exit_time) ORDER BY d
-    """).fetchall()
-
-    # 校准数据
-    calibrator = ProbabilityCalibrator(db)
-    reliability = calibrator.get_calibration_reliability()
-
-    # 信号计数
-    signal_count = db.conn.execute(
-        "SELECT COUNT(*) as cnt FROM market_prices WHERE ts > ?",
-        (int((now - timedelta(days=1)).timestamp() * 1000),),
-    ).fetchone()["cnt"] or 0
-
-    # 总交易数
-    total_trades = db.conn.execute(
-        "SELECT COUNT(*) as cnt FROM trades"
-    ).fetchone()["cnt"] or 0
+    # ── 资金曲线: capital_history → 按日聚合 ──
+    equity_curve = []
+    capital_history = raw.get("capital_history", [])
+    if capital_history:
+        # capital_history 格式: [[iso_timestamp, capital_value], ...]
+        # 按日期聚合：每天的最后一条减去上一天的最后一条 = 日盈亏
+        daily_capitals = {}
+        for ts_str, cap in capital_history:
+            try:
+                day = ts_str[:10]  # "2026-07-29"
+                daily_capitals[day] = cap
+            except Exception:
+                pass
+        sorted_days = sorted(daily_capitals.keys())
+        prev_cap = None
+        for day in sorted_days:
+            cap = daily_capitals[day]
+            if prev_cap is not None:
+                day_pnl = round(cap - prev_cap, 2)
+            else:
+                day_pnl = round(cap - raw.get("initial_capital", cap), 2)
+            equity_curve.append({"d": day, "day_pnl": day_pnl})
+            prev_cap = cap
 
     return {
-        "daily_pnl": daily["total_pnl"],
-        "daily_trades": daily["cnt"],
-        "daily_wins": daily["wins"],
-        "daily_losses": daily["losses"],
-        "daily_win_rate": (daily["wins"] / daily["cnt"] * 100) if daily["cnt"] > 0 else 0,
-        "closed_trades": [dict(r) for r in closed],
+        "daily_pnl": raw.get("daily_pnl", 0),
+        "daily_trades": raw.get("total", 0),
+        "daily_wins": raw.get("wins", 0),
+        "daily_losses": raw.get("losses", 0),
+        "daily_win_rate": raw.get("win_rate", 0),
+        "closed_trades": closed_trades,
         "open_positions": open_positions,
-        "equity_curve": [dict(r) for r in equity_rows],
-        "calibration": reliability,
-        "signal_count_24h": signal_count,
-        "total_trades": total_trades,
+        "equity_curve": equity_curve,
+        "calibration": [],                         # 校准需 DB，API 不提供
+        "signal_count_24h": 0,                     # 信号计数需 DB
+        "total_trades": raw.get("total", 0),
         "current_time": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "capital": raw.get("capital", 0),
+        "initial_capital": raw.get("initial_capital", 0),
+        "open_count": raw.get("open_count", 0),
     }
 
+
+# ════════════════════════════════════════════════════════════════
+# 渲染函数
+# ════════════════════════════════════════════════════════════════
 
 def render_metric_card(label: str, value: str, delta: str = "",
                         color: str = "normal"):
     """指标卡片"""
     delta_color = "normal"
     if delta.startswith("+"):
-        delta_color = "green" if "﹣" not in label else "red"
+        delta_color = "green"
     elif delta.startswith("-"):
         delta_color = "red"
 
@@ -142,55 +193,26 @@ def render_equity_chart(equity_rows: List[dict]):
 
 
 def render_calibration_chart(calibration: List[dict]):
-    """校准可靠性图 (Plotly)"""
-    if not calibration:
-        st.info("暂无校准数据 (需要更多已结算交易)")
-        return
-
-    df = pd.DataFrame(calibration)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["avg_model"], y=df["avg_realized"],
-        mode="markers+text",
-        name="校准点",
-        marker=dict(size=df["count"], sizemode="area", sizeref=2.*max(df["count"])/(40.**2),
-                    color=df["count"], colorscale="Viridis", showscale=True,
-                    colorbar=dict(title="样本数")),
-        text=df["bin"],
-        textposition="top center",
-    ))
-    # 理想校准线 (对角线)
-    fig.add_trace(go.Scatter(
-        x=[0, 1], y=[0, 1],
-        mode="lines",
-        name="理想校准",
-        line=dict(color="#0ecb81", width=1, dash="dash"),
-    ))
-    fig.update_layout(
-        title="校准可靠性",
-        xaxis=dict(title="模型概率", range=[0, 1]),
-        yaxis=dict(title="实现概率", range=[0, 1]),
-        template="plotly_dark",
-        height=400,
-        margin=dict(l=40, r=20, t=40, b=40),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    """校准可靠性图 — API 不提供此数据"""
+    st.info("📊 校准数据需连接数据库，实时 API 暂未提供")
 
 
 def render_positions(positions: List[dict]):
-    """持仓表"""
+    """持仓表 — 映射: city | bucket(温度桶) | entry_no | curr_no | pnl | size"""
     if not positions:
         st.info("🟢 无持仓")
         return
     df = pd.DataFrame(positions)
-    cols = ["city", "side", "entry_price", "size", "entry_time"]
+    # 显示 API 原生字段名以便查看实时数据
+    cols = ["city", "side", "entry_price", "curr_no", "pnl", "size", "entry_time"]
     available = [c for c in cols if c in df.columns]
-    st.dataframe(df[available], use_container_width=True, height=200)
+    st.dataframe(df[available], use_container_width=True, height=250)
 
 
 def render_closed_trades(trades: List[dict]):
     """最近平仓"""
     if not trades:
+        st.info("⏳ 暂无平仓记录")
         return
     df = pd.DataFrame(trades)
     cols = ["city", "side", "entry_price", "exit_price", "pnl", "exit_reason", "exit_time"]
@@ -227,18 +249,20 @@ def main():
     """, unsafe_allow_html=True)
 
     st.title("🌤️ HighTempTation 实时看板")
+    st.caption(f"数据源: {API_URL}  (来自天气 Bot 实时内存)")
 
     # 自动刷新
     last_refresh = st.empty()
     placeholder = st.empty()
 
-    db = TradeDB(DB_PATH)
-
     with placeholder.container():
-        data = load_data(db)
+        data = load_data()
 
         # 时间
-        last_refresh.caption(f"最后刷新: {data['current_time']}  (每 {REFRESH_SEC}s 自动)")
+        last_refresh.caption(
+            f"最后刷新: {data['current_time']}  (每 {REFRESH_SEC}s 自动)"
+            + (f"  ⚠️ {data.get('error', '')}" if data.get('error') else "")
+        )
 
         # ── 指标行 ──
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -247,14 +271,15 @@ def main():
             render_metric_card("今日 P&L", f"${pnl:+.2f}",
                                delta=f"{'🟢' if pnl>=0 else '🔴'} {pnl:+.2f}")
         with col2:
-            render_metric_card("今日交易", str(data["daily_trades"]))
+            render_metric_card("总交易", str(data["daily_trades"]))
         with col3:
             wr = data["daily_win_rate"]
-            render_metric_card("今日胜率", f"{wr:.1f}%",
+            render_metric_card("胜率", f"{wr:.1f}%",
                                delta=f"{data['daily_wins']}胜 / {data['daily_losses']}负")
         with col4:
-            render_metric_card("持仓", str(len(data["open_positions"])),
-                               delta=f"24h信号: {data['signal_count_24h']}")
+            oc = data.get("open_count", len(data["open_positions"]))
+            render_metric_card("持仓", str(oc),
+                               delta=f"资金: ${data.get('capital', 0):.0f}")
         with col5:
             render_metric_card("累计交易", str(data["total_trades"]))
 
@@ -275,7 +300,6 @@ def main():
             render_closed_trades(data["closed_trades"])
 
     # 自动刷新
-    import time as _time
     _time.sleep(REFRESH_SEC)
     st.rerun()
 
