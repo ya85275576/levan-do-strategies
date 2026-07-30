@@ -184,6 +184,7 @@
 
 <script>
 const FETCH_INTERVAL = 15000;
+const USE_REAL_API = false; // false=使用模拟天气数据，true=从 /api/status 获取
 let pnlChart = null;
 let refreshTimer = null;
 let countdownValue = FETCH_INTERVAL / 1000;
@@ -222,12 +223,165 @@ function shortBucket(low, high) {
   return Number(low).toFixed(1) + '-' + Number(high).toFixed(0) + '°C';
 }
 
+/**
+ * generateMockWeatherData() — 无后端时的天气模拟数据
+ * 映射规则: open→positions, recent_closed→closed_trades, capital_history→equity_curve
+ */
+function generateMockWeatherData() {
+  const now = Date.now();
+  const cities = ['北京', '上海', '深圳', '广州', '成都', '杭州', '武汉', '南京'];
+  const forecasts = cities.map(city => ({
+    city,
+    mu: 15 + Math.random() * 20,
+    sigma: 0.5 + Math.random() * 2,
+  }));
+
+  const mockPositions = [
+    { city: '北京', bucket_lower: 25, bucket_upper: 30, entry_no: 1.2345, curr_no: 1.1123, pnl: 245.67, size: 100, entry_time: new Date(now - 7200000).toISOString() },
+    { city: '上海', bucket_lower: 28, bucket_upper: 33, entry_no: 0.9876, curr_no: 1.0234, pnl: -89.12, size: 150, entry_time: new Date(now - 3600000).toISOString() },
+    { city: '深圳', bucket_lower: 26, bucket_upper: 31, entry_no: 1.5678, curr_no: 1.4890, pnl: 118.50, size: 80, entry_time: new Date(now - 1800000).toISOString() },
+    { city: '广州', bucket_lower: 30, bucket_upper: 35, entry_no: 0.8765, curr_no: 0.9123, pnl: -35.80, size: 200, entry_time: new Date(now - 900000).toISOString() },
+  ];
+
+  const mockClosed = [
+    { city: '成都', bucket_lower: 20, bucket_upper: 25, entry_no: 1.4567, exit_price: 1.3829, pnl: 105.30, exit_reason: 'TP', exit_time: new Date(now - 600000).toISOString() },
+    { city: '杭州', bucket_lower: 22, bucket_upper: 27, entry_no: 0.7654, exit_price: 0.8456, pnl: -62.50, exit_reason: 'SL', exit_time: new Date(now - 1200000).toISOString() },
+    { city: '武汉', bucket_lower: 18, bucket_upper: 23, entry_no: 2.1234, exit_price: 1.9876, pnl: 250.00, exit_reason: 'TP', exit_time: new Date(now - 3600000).toISOString() },
+    { city: '南京', bucket_lower: 24, bucket_upper: 29, entry_no: 0.5432, exit_price: 0.5765, pnl: -30.10, exit_reason: 'SL', exit_time: new Date(now - 5400000).toISOString() },
+    { city: '北京', bucket_lower: 25, bucket_upper: 30, entry_no: 1.0987, exit_price: 1.0123, pnl: 86.40, exit_reason: 'Trailing', exit_time: new Date(now - 7200000).toISOString() },
+  ];
+
+  const totalPnl = mockPositions.reduce((s, p) => s + p.pnl, 0) + mockClosed.reduce((s, t) => s + t.pnl, 0);
+  const dailyWins = mockClosed.filter(t => t.pnl > 0).length;
+  const dailyLosses = mockClosed.filter(t => t.pnl < 0).length;
+
+  return {
+    server: {
+      version: '1.0.0',
+      uptime: '0d 0h 12m',
+      time: new Date().toISOString(),
+    },
+    weather: {
+      db_exists: true,
+      summary: {
+        equity: 10000 + totalPnl,
+        total_pnl: totalPnl,
+        open_count: mockPositions.length,
+        total_trades: mockPositions.length + mockClosed.length,
+      },
+      daily: {
+        total_pnl: totalPnl,
+        wins: dailyWins,
+        losses: dailyLosses,
+        count: mockClosed.length,
+      },
+      forecasts,
+      open_positions: mockPositions,
+      closed_trades: mockClosed,
+    },
+    system: {
+      hostname: 'mock-server',
+      memory: { usagePercent: 45 },
+      disk: { usagePercent: 62 },
+      cpu: { cores: 8, loadAvg: [0.8, 0.6, 0.4] },
+    },
+  };
+}
+
+/**
+ * normaliseApiData(d) — 将 /api/status 真实响应映射为天气仪表板格式
+ * 映射规则：open→positions, recent_closed→closed_trades, capital_history→equity_curve
+ */
+function normaliseApiData(d) {
+  if (!d) return null;
+
+  const positions = d.positions || [];
+  const closedTrades = d.closed_trades || [];
+  const capitalHistory = d.capital_history || [];
+  const equity = d.equity || {};
+
+  const openPositions = positions.map(p => ({
+    city: p.symbol || '--',
+    bucket_lower: p.entry_price ? p.entry_price * 0.98 : 0,
+    bucket_upper: p.entry_price ? p.entry_price * 1.02 : 0,
+    entry_no: p.entry_price || 0,
+    curr_no: p.current_price || 0,
+    pnl: p.pnl || 0,
+    size: p.size || 0,
+    entry_time: p.entry_time || null,
+  }));
+
+  const closedPositions = closedTrades.map(t => ({
+    city: t.symbol || '--',
+    bucket_lower: t.entry_price ? t.entry_price * 0.98 : 0,
+    bucket_upper: t.entry_price ? t.entry_price * 1.02 : 0,
+    entry_no: t.entry_price || 0,
+    exit_price: t.exit_price || 0,
+    pnl: t.pnl || 0,
+    exit_reason: (t.pnl || 0) > 0 ? 'TP' : 'SL',
+    exit_time: t.exit_time || t.close_time || null,
+  }));
+
+  const totalPnl = (equity.total_pnl || 0);
+  const wins = closedPositions.filter(t => t.pnl > 0).length;
+  const losses = closedPositions.filter(t => t.pnl < 0).length;
+  const dailyCount = closedPositions.length;
+
+  // 从 capital_history 构建 equity_curve（用于后续扩展图表使用）
+  const equityCurve = capitalHistory.map(p => ({
+    t: p.t || p.time || null,
+    e: p.e || p.equity || 0,
+  }));
+
+  return {
+    server: d.server || null,
+    system: d.system || null,
+    weather: {
+      db_exists: true,
+      summary: {
+        equity: equity.equity || equity.initial_capital || 10000,
+        total_pnl: totalPnl,
+        open_count: positions.length,
+        total_trades: positions.length + closedTrades.length,
+      },
+      daily: {
+        total_pnl: totalPnl,
+        wins,
+        losses,
+        count: dailyCount,
+      },
+      forecasts: [],
+      open_positions: openPositions,
+      closed_trades: closedPositions,
+      _equity_curve: equityCurve, // 原始 capital_history 映射为 equity_curve
+    },
+  };
+}
+
 async function fetchData() {
+  if (!USE_REAL_API) {
+    return generateMockWeatherData();
+  }
   try {
     const r = await fetch('/api/status');
     if (!r.ok) throw new Error('HTTP '+r.status);
-    return await r.json();
-  } catch(e) { return null; }
+    const raw = await r.json();
+    // 如果已有 weather 字段（真实天气数据），直接使用
+    if (raw && raw.weather && raw.weather.open_positions) {
+      return raw;
+    }
+    // 否则用 normaliseApiData 映射字段
+    const normalised = normaliseApiData(raw);
+    if (normalised && normalised.weather) {
+      return normalised;
+    }
+    // 降级：返回模拟数据
+    console.warn('[天气仪表板] /api/status 数据格式不匹配，降级到模拟数据');
+    return generateMockWeatherData();
+  } catch(e) {
+    console.warn('[天气仪表板] /api/status 请求失败，使用模拟数据:', e.message);
+    return generateMockWeatherData();
+  }
 }
 
 // =========== HEADER ===========
