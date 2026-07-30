@@ -715,6 +715,166 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// ======== 归因面板页面 ========
+
+const ATTRIBUTION_HTML_PATH = join(__dirname, 'attribution.html');
+let ATTRIBUTION_HTML_CACHE = '';
+
+function getAttributionHtml() {
+  try {
+    ATTRIBUTION_HTML_CACHE = readFileSync(ATTRIBUTION_HTML_PATH, 'utf-8');
+  } catch (err) {
+    console.warn(`[归因] ⚠️ 读取 attribution.html 失败: ${err.message}`);
+    if (!ATTRIBUTION_HTML_CACHE) {
+      ATTRIBUTION_HTML_CACHE = '<html><body><h1>归因文件加载失败</h1></body></html>';
+    }
+  }
+  return ATTRIBUTION_HTML_CACHE;
+}
+
+app.get('/attribution', (_req, res) => {
+  const html = getAttributionHtml();
+  res.type('html').send(html);
+});
+
+// ======== 归因 JSON API ========
+
+app.get('/api/attribution', async (_req, res) => {
+  try {
+    if (!existsSync(WEATHER_DB_PATH)) {
+      return res.json({ strategies: {}, summary: {}, total_trades: 0, days: 30 });
+    }
+    const days = parseInt(_req.query.days) || 30;
+    const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+
+    // 使用 sqlite3 查询归因数据
+    const result = await queryWeatherDB(`
+      SELECT strategy, COUNT(*) AS total,
+             SUM(CASE WHEN actual_result=1 THEN 1 ELSE 0 END) AS wins,
+             SUM(CASE WHEN actual_result=0 THEN 1 ELSE 0 END) AS losses,
+             COALESCE(SUM(pnl),0) AS total_pnl,
+             COALESCE(AVG(pnl),0) AS avg_pnl
+      FROM signal_history
+      WHERE strategy IS NOT NULL
+        AND actual_result IS NOT NULL
+        AND created_at >= '${cutoff}'
+      GROUP BY strategy
+      ORDER BY total_pnl DESC
+    `);
+
+    // 获取每个策略的 PnL 序列
+    const pnlRows = await queryWeatherDB(`
+      SELECT strategy, pnl, created_at FROM signal_history
+      WHERE strategy IS NOT NULL
+        AND actual_result IS NOT NULL
+        AND created_at >= '${cutoff}'
+      ORDER BY strategy, created_at ASC
+    `);
+
+    // 按策略分组 PnL 序列
+    const seriesByStrategy = {};
+    if (pnlRows) {
+      for (const row of pnlRows) {
+        const s = row.strategy || 'model_edge';
+        if (!seriesByStrategy[s]) seriesByStrategy[s] = [];
+        if (row.pnl != null) seriesByStrategy[s].push(Number(row.pnl));
+      }
+    }
+
+    const strategies = {};
+    let grandTotalPnl = 0;
+    let grandTotalTrades = 0;
+    let grandWins = 0;
+
+    if (result) {
+      for (const r of result) {
+        const st = r.strategy || 'model_edge';
+        const total = r.total || 0;
+        const wins = r.wins || 0;
+        const losses = r.losses || 0;
+        const totalPnl = Number(r.total_pnl) || 0;
+        const avgPnl = Number(r.avg_pnl) || 0;
+        const winRate = total > 0 ? (wins / total) : 0;
+
+        grandTotalPnl += totalPnl;
+        grandTotalTrades += total;
+        grandWins += wins;
+
+        // 夏普比率
+        const pnlSeries = seriesByStrategy[st] || [];
+        let sharpe = 0;
+        if (pnlSeries.length >= 3) {
+          const meanPnl = pnlSeries.reduce((a, b) => a + b, 0) / pnlSeries.length;
+          const variance = pnlSeries.reduce((acc, p) => acc + (p - meanPnl) ** 2, 0) / pnlSeries.length;
+          if (variance > 0) {
+            const dailySharpe = meanPnl / Math.sqrt(variance);
+            sharpe = Math.round(dailySharpe * Math.sqrt(365) * 100) / 100;
+          }
+        }
+
+        // 最大回撤
+        let maxDrawdown = 0;
+        if (pnlSeries.length > 0) {
+          let cum = 0;
+          let peak = 0;
+          for (const p of pnlSeries) {
+            cum += p;
+            if (cum > peak) peak = cum;
+            const dd = peak - cum;
+            if (dd > maxDrawdown) maxDrawdown = dd;
+          }
+        }
+
+        // 累计 PnL 曲线（用于 Chart.js）
+        let cumPnl = 0;
+        const cumCurve = pnlSeries.map(p => { cumPnl += p; return Math.round(cumPnl * 100) / 100; });
+
+        strategies[st] = {
+          total,
+          wins,
+          losses,
+          win_rate: Math.round(winRate * 10000) / 10000,
+          total_pnl: Math.round(totalPnl * 100) / 100,
+          avg_pnl: Math.round(avgPnl * 100) / 100,
+          sharpe,
+          max_drawdown: Math.round(maxDrawdown * 100) / 100,
+          pnl_series: cumCurve.slice(-60),
+          weight: 0,
+        };
+      }
+    }
+
+    // 计算动态权重（基于夏普 × 总PnL归一化）
+    const stEntries = Object.entries(strategies);
+    let totalScore = 0;
+    const scores = {};
+    for (const [st, data] of stEntries) {
+      // 得分 = max(0, sharpe) * (1 + total_pnl / (grandTotalPnl || 1))
+      const rawSharpe = Math.max(0, data.sharpe || 0);
+      const pnlWeight = grandTotalPnl !== 0 ? data.total_pnl / grandTotalPnl : 0;
+      const score = rawSharpe * (1 + pnlWeight);
+      scores[st] = Math.max(0, score);
+      totalScore += score;
+    }
+    for (const [st, data] of stEntries) {
+      data.weight = totalScore > 0 ? Math.round((scores[st] / totalScore) * 10000) / 100 : 0;
+      if (data.weight < 0.01 && data.total > 0) data.weight = 0.01;
+    }
+
+    const summary = {
+      total_pnl: Math.round(grandTotalPnl * 100) / 100,
+      total_trades: grandTotalTrades,
+      win_rate: grandTotalTrades > 0 ? Math.round((grandWins / grandTotalTrades) * 10000) / 100 : 0,
+      strategy_count: stEntries.length,
+    };
+
+    res.json({ strategies, summary, total_trades: grandTotalTrades, days });
+  } catch (e) {
+    console.error(`[归因API] 错误: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ======== 仪表板页面 ========
 
 const DASHBOARD_HTML_PATH = join(__dirname, '../../tools/hightemptation_live/dashboard.html');
@@ -760,6 +920,8 @@ app.listen(config.port, config.host, () => {
   console.log(`║  Webhook:    POST /webhook                    ║`);
   console.log(`║  健康检查:   GET  /health                      ║`);
   console.log(`║  仪表板:     GET  / 或 /dashboard              ║`);
+  console.log(`║  归因面板:   GET  /attribution                  ║`);
+  console.log(`║  归因 API:   GET  /api/attribution?days=30     ║`);
   console.log('╚══════════════════════════════════════════════╝');
 
   if (!config.webhookSecret) {

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📊 策略归因面板 — HighTempTation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0d1117; color: #c9d1d9; min-height: 100vh;
+  }
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px 20px; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 18px; margin-bottom: 14px;
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #30363d; border-radius: 12px; flex-wrap: wrap; gap: 8px;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; }
+  .logo { font-size: 18px; font-weight: 800; color: #58a6ff; }
+  .logo span { color: #f0883e; }
+  .nav-link {
+    color: #8b949e; text-decoration: none; font-size: 12px; padding: 4px 10px;
+    border: 1px solid #30363d; border-radius: 6px; transition: all 0.2s;
+  }
+  .nav-link:hover { color: #58a6ff; border-color: #58a6ff; }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card-title {
+    font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.3px; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;
+  }
+
+  .chart-container { position: relative; width: 100%; height: 350px; }
+
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
+  }
+  .stat-card {
+    background: linear-gradient(135deg, #1a1d29 0%, #161b22 100%);
+    border: 1px solid #2d3343; border-radius: 8px; padding: 10px 12px;
+    position: relative; overflow: hidden;
+  }
+  .stat-card .sv { font-size: 20px; font-weight: 700; font-family: 'Consolas', monospace; }
+  .stat-card .sl { font-size: 10px; color: #6a7283; margin-top: 1px; }
+  .positive { color: #0ecb81; }
+  .negative { color: #f6465d; }
+  .neutral { color: #8b949e; }
+
+  .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .data-table th {
+    text-align: left; padding: 8px 10px; border-bottom: 2px solid #30363d;
+    color: #8b949e; font-weight: 600; font-size: 10px; text-transform: uppercase; white-space: nowrap;
+  }
+  .data-table td { padding: 6px 10px; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  .data-table tr:hover td { background: #1c2128; }
+
+  .weight-bar {
+    height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; margin-top: 2px;
+  }
+  .weight-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+
+  .strategy-tag {
+    display: inline-block; padding: 1px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600;
+  }
+  .tag-ladder { background: #1b2d3d; color: #58a6ff; border: 1px solid #1f6feb; }
+  .tag-extreme { background: #2d1b0e; color: #d29922; border: 1px solid #bb8009; }
+  .tag-near_lock { background: #0d2818; color: #3fb950; border: 1px solid #2ea043; }
+  .tag-model_edge { background: #1b1b2d; color: #bc8cff; border: 1px solid #7c5cbf; }
+  .tag-hko_confirm { background: #2d1215; color: #f85149; border: 1px solid #da3633; }
+
+  .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .loading .spinner {
+    width: 32px; height: 32px; border: 3px solid #21262d;
+    border-top-color: #58a6ff; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .footer {
+    text-align: center; padding: 14px; color: #484f58; font-size: 10px;
+    border-top: 1px solid #21262d; margin-top: 28px;
+  }
+  .refresh-bar {
+    display: flex; align-items: center; gap: 4px; font-size: 10px; color: #484f58;
+  }
+  .time-range {
+    display: flex; gap: 4px; margin-left: 8px;
+  }
+  .time-range button {
+    background: #21262d; border: 1px solid #30363d; color: #8b949e;
+    padding: 2px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;
+  }
+  .time-range button.active {
+    background: #1f6feb; color: #fff; border-color: #1f6feb;
+  }
+  .time-range button:hover { border-color: #58a6ff; }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div>加载归因面板...</div>
+  </div>
+</div>
+
+<script>
+const STRATEGY_META = {
+  ladder:         { label: '🪜 温度阶梯',  color: '#58a6ff', tag: 'tag-ladder' },
+  extreme_coldmath: { label: '❄️ 极端低估', color: '#d29922', tag: 'tag-extreme' },
+  near_lock:      { label: '🔒 近结算锁利', color: '#3fb950', tag: 'tag-near_lock' },
+  model_edge:     { label: '📐 模型边缘',  color: '#bc8cff', tag: 'tag-model_edge' },
+  hko_confirm:    { label: '🏛️ 天文台确认', color: '#f85149', tag: 'tag-hko_confirm' },
+};
+
+let DAYS = 30;
+let pnlChart = null;
+
+function $(s) { return document.querySelector(s); }
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function pnlCls(v) { return v == null ? '' : (v > 0 ? 'positive' : (v < 0 ? 'negative' : '')); }
+function pnlSign(v) { return v == null ? '' : (v > 0 ? '+' : ''); }
+
+async function fetchData() {
+  try {
+    const r = await fetch(`/api/attribution?days=${DAYS}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } catch (e) {
+    console.error('获取归因数据失败:', e);
+    return null;
+  }
+}
+
+// =========== HEADER ===========
+function renderHeader(d) {
+  const days = d.days || DAYS;
+  return '<div class="header"><div class="header-left">'+
+    '<div class="logo">📊 策略归因<span>面板</span></div>'+
+    '<a href="/dashboard" class="nav-link">← 返回仪表板</a>'+
+    '</div><div class="header-right">'+
+    '<div class="time-range">'+
+      '<button onclick="setDays(7)" class="'+(days===7?'active':'')+'">7D</button>'+
+      '<button onclick="setDays(30)" class="'+(days===30?'active':'')+'">30D</button>'+
+      '<button onclick="setDays(90)" class="'+(days===90?'active':'')+'">90D</button>'+
+    '</div>'+
+    '<span style="font-size:10px;color:#8b949e">最后更新: ' + new Date().toLocaleTimeString('zh-CN') + '</span>'+
+    '</div></div>';
+}
+
+// =========== SUMMARY STATS ===========
+function renderStats(d) {
+  const s = d.summary || {};
+  const strategies = d.strategies || {};
+  const count = Object.keys(strategies).length;
+
+  return '<div class="card"><div class="card-title">📊 综合指标</div><div class="stats-grid">'+
+    '<div class="stat-card"><div class="sv '+(s.total_pnl>=0?'positive':'negative')+'">'+pnlSign(s.total_pnl)+'$'+Math.abs(s.total_pnl||0).toFixed(2)+'</div><div class="sl">总盈亏</div></div>'+
+    '<div class="stat-card"><div class="sv">'+(s.total_trades||0)+'</div><div class="sl">总交易</div></div>'+
+    '<div class="stat-card"><div class="sv" style="color:#d29922">'+(s.win_rate||0).toFixed(1)+'%</div><div class="sl">总胜率</div></div>'+
+    '<div class="stat-card"><div class="sv" style="color:#58a6ff">'+count+'</div><div class="sl">策略数</div></div>'+
+    '</div></div>';
+}
+
+// =========== CHART ===========
+function renderChart(d) {
+  const strategies = d.strategies || {};
+  const keys = Object.keys(strategies);
+
+  if (keys.length === 0) {
+    return '<div class="card"><div class="card-title">📈 累计盈亏曲线</div><div style="text-align:center;padding:30px;color:#484f58">暂无归因数据，请等待交易积累</div></div>';
+  }
+
+  const ctx = document.createElement('canvas');
+  ctx.id = 'pnlChart';
+  const container = document.createElement('div');
+  container.className = 'card';
+  container.innerHTML = '<div class="card-title">📈 累计盈亏曲线</div><div class="chart-container"></div>';
+  container.querySelector('.chart-container').appendChild(ctx);
+
+  // Wait for DOM insertion then init chart
+  setTimeout(() => initChart(chartElement, strategies, keys), 50);
+
+  return container.outerHTML;
+}
+
+function initChart(el, strategies, keys) {
+  if (pnlChart) { pnlChart.destroy(); pnlChart = null; }
+
+  const datasets = [];
+  for (const k of keys) {
+    const meta = STRATEGY_META[k] || { label: k, color: '#8b949e' };
+    const series = strategies[k].pnl_series || [];
+    const labels = series.map((_, i) => '#' + (i + 1));
+    datasets.push({
+      label: meta.label,
+      data: series,
+      borderColor: meta.color,
+      backgroundColor: meta.color + '20',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 1,
+      borderWidth: 2,
+    });
+  }
+
+  pnlChart = new Chart(document.getElementById('pnlChart'), {
+    type: 'line',
+    data: { labels: datasets.length > 0 ? datasets[0].data.map((_, i) => '#' + (i + 1)) : [], datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+      },
+      scales: {
+        x: { ticks: { color: '#484f58', font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: {
+          ticks: { color: '#484f58', font: { size: 10 }, callback: v => '$' + v.toFixed(0) },
+          grid: { color: '#21262d' },
+        },
+      },
+    },
+  });
+}
+
+// =========== METRICS TABLE ===========
+function renderTable(d) {
+  const strategies = d.strategies || {};
+  const keys = Object.keys(strategies);
+
+  if (keys.length === 0) {
+    return '';
+  }
+
+  let html = '<div class="card"><div class="card-title">📋 策略指标对比 <span style="font-weight:400;color:#484f58;font-size:10px">按总PnL排序</span></div>'+
+    '<table class="data-table"><thead><tr>'+
+    '<th>策略</th><th>交易数</th><th>胜率</th><th>总盈亏</th><th>均笔盈亏</th><th>夏普</th><th>最大回撤</th><th>动态权重</th>'+
+    '</tr></thead><tbody>';
+
+  const sorted = keys.slice().sort((a, b) => (strategies[b].total_pnl || 0) - (strategies[a].total_pnl || 0));
+
+  for (const k of sorted) {
+    const s = strategies[k];
+    const meta = STRATEGY_META[k] || { label: k, color: '#8b949e', tag: '' };
+    const wr = (s.win_rate || 0) * 100;
+    const weight = s.weight || 0;
+    const weightColor = weight > 30 ? '#3fb950' : (weight > 10 ? '#d29922' : '#8b949e');
+
+    html += '<tr>'+
+      '<td><span class="strategy-tag '+(meta.tag||'')+'">'+esc(meta.label)+'</span></td>'+
+      '<td style="font-family:Consolas,monospace">'+(s.total||0)+'</td>'+
+      '<td style="font-family:Consolas,monospace;color:'+(wr>=50?'#0ecb81':'#f6465d')+'">'+wr.toFixed(1)+'%</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+(s.total_pnl>=0?'color:#0ecb81':'color:#f6465d')+'">'+pnlSign(s.total_pnl)+'$'+Math.abs(s.total_pnl||0).toFixed(2)+'</td>'+
+      '<td style="font-family:Consolas,monospace;'+(s.avg_pnl>=0?'color:#0ecb81':'color:#8b949e')+'">'+(s.avg_pnl!=null?'$'+Number(s.avg_pnl).toFixed(2):'—')+'</td>'+
+      '<td style="font-family:Consolas,monospace;color:'+(s.sharpe>=1?'#0ecb81':(s.sharpe>0?'#d29922':'#8b949e'))+'">'+(s.sharpe||0).toFixed(2)+'</td>'+
+      '<td style="font-family:Consolas,monospace;color:#f6465d">$'+(s.max_drawdown||0).toFixed(2)+'</td>'+
+      '<td><div style="display:flex;align-items:center;gap:6px">'+
+        '<div style="font-family:Consolas,monospace;font-weight:600;color:'+weightColor+';min-width:40px">'+weight.toFixed(1)+'%</div>'+
+        '<div class="weight-bar" style="flex:1;min-width:60px"><div class="weight-fill" style="width:'+Math.min(weight,100)+'%;background:'+weightColor+'"></div></div>'+
+      '</div></td>'+
+    '</tr>';
+  }
+
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// =========== DYNAMIC WEIGHT CHART ===========
+function renderWeightChart(d) {
+  const strategies = d.strategies || {};
+  const keys = Object.keys(strategies);
+  if (keys.length === 0) return '';
+
+  const ctx2 = document.createElement('canvas');
+  ctx2.id = 'weightChart';
+  const container = document.createElement('div');
+  container.className = 'card';
+  container.innerHTML = '<div class="card-title">⚖️ 动态权重分配 <span style="font-weight:400;color:#484f58;font-size:10px">基于夏普×PnL得分</span></div><div class="chart-container" style="height:280px"></div>';
+  container.querySelector('.chart-container').appendChild(ctx2);
+
+  setTimeout(() => initWeightChart(keys, strategies), 50);
+  return container.outerHTML;
+}
+
+function initWeightChart(keys, strategies) {
+  const labels = keys.map(k => (STRATEGY_META[k] || { label: k }).label);
+  const weights = keys.map(k => strategies[k].weight || 0);
+  const colors = keys.map(k => (STRATEGY_META[k] || { color: '#8b949e' }).color);
+
+  new Chart(document.getElementById('weightChart'), {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: weights,
+        backgroundColor: colors.map(c => c + 'cc'),
+        borderColor: colors,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: '#8b949e', font: { size: 11 }, padding: 12 },
+        },
+      },
+    },
+  });
+}
+
+// =========== STRATEGY DESCRIPTION ===========
+function renderDescription() {
+  return '<div class="card"><div class="card-title">📖 策略说明</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;font-size:11px">'+
+    '<div style="background:#1a1d29;border:1px solid #2d3343;border-radius:6px;padding:8px 10px"><strong style="color:#58a6ff">🪜 温度阶梯</strong><br><span style="color:#6a7283">主信号触发时，自动扫描相邻温度桶，批量挂单</span></div>'+
+    '<div style="background:#1a1d29;border:1px solid #2d3343;border-radius:6px;padding:8px 10px"><strong style="color:#d29922">❄️ 极端低估</strong><br><span style="color:#6a7283">METAR实时温度显著偏离预报时的赔率密集计算</span></div>'+
+    '<div style="background:#1a1d29;border:1px solid #2d3343;border-radius:6px;padding:8px 10px"><strong style="color:#3fb950">🔒 近结算锁利</strong><br><span style="color:#6a7283">距结算&lt;24h，利用剩余时间价值快速锁利</span></div>'+
+    '<div style="background:#1a1d29;border:1px solid #2d3343;border-radius:6px;padding:8px 10px"><strong style="color:#bc8cff">📐 模型边缘</strong><br><span style="color:#6a7283">标准预报模型概率vs市场价格套利，主流信号</span></div>'+
+    '<div style="background:#1a1d29;border:1px solid #2d3343;border-radius:6px;padding:8px 10px"><strong style="color:#f85149">🏛️ 天文台确认</strong><br><span style="color:#6a7283">香港市场专用，保守型信号（官方数据确认）</span></div>'+
+    '</div></div>';
+}
+
+function renderFooter() {
+  return '<div class="footer">📊 HighTempTation 策略归因面板 · <a href="/api/attribution?days='+DAYS+'" style="color:#58a6ff;text-decoration:none">API</a> · '+
+    '<a href="/attribution" style="color:#8b949e;text-decoration:none">刷新</a></div>';
+}
+
+// =========== MAIN ===========
+function renderDashboard(d) {
+  const container = document.getElementById('app');
+  container.innerHTML = renderHeader(d) + renderStats(d);
+
+  // Chart
+  const chartCard = document.createElement('div');
+  chartCard.className = 'card';
+  chartCard.innerHTML = '<div class="card-title">📈 累计盈亏曲线</div><div class="chart-container"><canvas id="pnlChart"></canvas></div>';
+  container.appendChild(chartCard);
+
+  container.innerHTML += renderTable(d);
+
+  // Weight chart
+  const weightCard = document.createElement('div');
+  weightCard.className = 'card';
+  weightCard.innerHTML = '<div class="card-title">⚖️ 动态权重分配 <span style="font-weight:400;color:#484f58;font-size:10px">基于夏普×PnL得分</span></div><div class="chart-container" style="height:280px"><canvas id="weightChart"></canvas></div>';
+  container.appendChild(weightCard);
+
+  container.innerHTML += renderDescription() + renderFooter();
+
+  // Init charts after DOM is ready
+  const strategies = d.strategies || {};
+  const keys = Object.keys(strategies);
+  if (keys.length > 0) {
+    initCharts(keys, strategies);
+  }
+}
+
+function initCharts(keys, strategies) {
+  if (pnlChart) { pnlChart.destroy(); pnlChart = null; }
+
+  // PnL curve chart
+  const datasets = [];
+  for (const k of keys) {
+    const meta = STRATEGY_META[k] || { label: k, color: '#8b949e' };
+    const series = strategies[k].pnl_series || [];
+    datasets.push({
+      label: meta.label,
+      data: series,
+      borderColor: meta.color,
+      backgroundColor: meta.color + '20',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 1,
+      borderWidth: 2,
+    });
+  }
+  const maxLen = Math.max(...datasets.map(d => d.data.length));
+  const labels = Array.from({ length: maxLen }, (_, i) => '#' + (i + 1));
+
+  const pnlCtx = document.getElementById('pnlChart');
+  if (pnlCtx) {
+    pnlChart = new Chart(pnlCtx, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+        },
+        scales: {
+          x: { ticks: { color: '#484f58', font: { size: 10 } }, grid: { color: '#21262d' } },
+          y: {
+            ticks: { color: '#484f58', font: { size: 10 }, callback: v => '$' + v.toFixed(0) },
+            grid: { color: '#21262d' },
+          },
+        },
+      },
+    });
+  }
+
+  // Weight doughnut chart
+  const labels2 = keys.map(k => (STRATEGY_META[k] || { label: k }).label);
+  const weights = keys.map(k => strategies[k].weight || 0);
+  const colors = keys.map(k => (STRATEGY_META[k] || { color: '#8b949e' }).color);
+
+  const wCtx = document.getElementById('weightChart');
+  if (wCtx) {
+    new Chart(wCtx, {
+      type: 'doughnut',
+      data: {
+        labels: labels2,
+        datasets: [{
+          data: weights,
+          backgroundColor: colors.map(c => c + 'cc'),
+          borderColor: colors,
+          borderWidth: 2,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: { color: '#8b949e', font: { size: 11 }, padding: 12 },
+          },
+        },
+      },
+    });
+  }
+}
+
+function setDays(n) {
+  DAYS = n;
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('app').innerHTML = '<div class="loading" id="loading"><div class="spinner"></div><div>加载归因面板...</div></div>';
+  refresh();
+}
+
+async function refresh() {
+  const d = await fetchData();
+  document.getElementById('loading').style.display = 'none';
+  if (!d) {
+    document.getElementById('app').innerHTML =
+      '<div class="container"><div class="empty-state" style="text-align:center;padding:60px;color:#484f58">'+
+      '<div style="font-size:26px">⚠️</div><div style="margin-top:8px">无法连接服务器</div></div></div>';
+    return;
+  }
+  renderDashboard(d);
+}
+
+document.addEventListener('DOMContentLoaded', refresh);
+</script>
+</body>
+</html>
