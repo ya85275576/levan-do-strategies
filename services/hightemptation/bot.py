@@ -74,6 +74,14 @@ def bucket_prob(lower: float, upper: float, mu: float, sigma: float) -> float:
     return max(0.0, min(1.0, _gaussian_cdf((upper - mu) / sigma) - _gaussian_cdf((lower - mu) / sigma)))
 
 
+def find_bucket_for_temp(temp: float) -> Optional[str]:
+    """给定一个温度值（如 30°C），返回它属于哪个温度桶标签（如 '29-31'）。"""
+    for lo, hi, label in cfg.buckets:
+        if lo <= temp < hi:
+            return label
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 1. 結算站對照表 ── 城市 → ICAO / 坐標
 # ═══════════════════════════════════════════════════════════════════════
@@ -198,6 +206,11 @@ class Config:
         self.BIAS_DAYS = int(os.getenv("BIAS_DAYS", "30"))
         self.CROSS_VALIDATE = os.getenv("CROSS_VALIDATE", "true").lower() == "true"
 
+        # ── 区间覆盖模式 ──
+        self.CORE_RANGE = self._parse_core_range(os.getenv("CORE_RANGE", "29,30,31"))
+        self.CITY_PAIRS = self._parse_city_pairs(os.getenv("CITY_PAIRS", ""))
+        self.RANGE_DEVIATION_THRESH = float(os.getenv("RANGE_DEVIATION_THRESH", "0.12"))
+
         self.DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
         self.DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "3002"))
 
@@ -210,6 +223,29 @@ class Config:
             xs = part.split(",")
             if len(xs) >= 3:
                 self.buckets.append((float(xs[0]), float(xs[1]), xs[2].strip()))
+
+    @staticmethod
+    def _parse_core_range(raw: str) -> list[float]:
+        """解析 '29,30,31' → [29.0, 30.0, 31.0]"""
+        try:
+            return [float(x.strip()) for x in raw.split(",") if x.strip()]
+        except Exception:
+            return [29.0, 30.0, 31.0]
+
+    @staticmethod
+    def _parse_city_pairs(raw: str) -> list[tuple[str, str]]:
+        """
+        解析 'Hong Kong,Seoul|Tokyo,Seoul' → [("Hong Kong","Seoul"), ("Tokyo","Seoul")]
+        若为空字符串则返回空列表。
+        """
+        if not raw or not raw.strip():
+            return []
+        pairs = []
+        for part in raw.split("|"):
+            cs = [c.strip() for c in part.split(",")]
+            if len(cs) == 2:
+                pairs.append((cs[0], cs[1]))
+        return pairs
 
     @property
     def daily_loss_limit(self) -> float:
@@ -668,6 +704,8 @@ class Engine:
         self.daily_pnl = 0.0
         self.today = date.today()
         self.capital_history: list[tuple[str, float]] = [(datetime.now(timezone.utc).isoformat(), cfg.INITIAL_CAPITAL)]
+        # ── 跨城市相关系数缓存 ──
+        self.correlation_cache: dict[tuple[str, str], float] = {}
 
     def has_position(self, mid: str) -> bool:
         """檢查 market_id 是否已存在（含持倉 + 已平倉），防止重複開倉"""
@@ -820,6 +858,142 @@ class Engine:
             self.today = date.today(); self.daily_pnl = 0.0
         return self.daily_pnl <= -cfg.daily_loss_limit
 
+    # ── 区间覆盖开仓 ──
+
+    def _find_bundle_markets(self, city: str, dt: str,
+                             all_analyses: list[dict]) -> list[dict]:
+        """
+        找到指定城市+日期下所有属于 CORE_RANGE 温度桶的市场分析记录。
+        返回 list[analysis_dict]，每一个 dict 包含 {city, date, bucket_label,
+        p_model, p_market, diff, no_price, market_id, end_date, ...}。
+        """
+        bundle = []
+        seen_labels = set()
+        for temp in cfg.CORE_RANGE:
+            label = find_bucket_for_temp(temp)
+            if not label or label in seen_labels:
+                continue
+            seen_labels.add(label)
+            # 在分析结果中找匹配项
+            for a in all_analyses:
+                if (a.get("city") == city and a.get("date") == dt
+                        and a.get("bucket") == label):
+                    bundle.append(a)
+                    break
+        return bundle
+
+    def open_range_positions(self, bundle: list[dict],
+                             bundle_signals: list[dict]) -> int:
+        """
+        对核心区间内的所有桶等量开仓。
+        bundle: 同一 city+date 下 CORE_RANGE 桶的分析记录列表
+        bundle_signals: 命中信号阈值的子集（可能部分桶没单独触发）
+        返回实际开仓数。
+        """
+        if len(bundle) < 1:
+            return 0
+        if self.should_pause():
+            logger.info("  ⏸️ 风控暂停，跳过区间开仓")
+            return 0
+
+        # 等量开仓：每个桶分配相同金额
+        per_pos_size = cfg.POS_MIN
+        total_needed = per_pos_size * len(bundle)
+        if self.capital < total_needed:
+            logger.info(f"  ⛔ 区间开仓资金不足: 需${total_needed:.0f} 仅${self.capital:.0f}")
+            return 0
+
+        # 并发送限制检查
+        open_count = sum(1 for p in self.positions if p.is_open)
+        if open_count + len(bundle) > cfg.MAX_CONCURRENT:
+            logger.info(f"  ⏸️ 区间开仓将超过并发上限 {cfg.MAX_CONCURRENT}")
+            return 0
+
+        opened = 0
+        for a in bundle:
+            mid = a.get("market_id", "")
+            no_price = a.get("no_price", 0.0)
+            end_date = a.get("end_date", "")
+
+            if self.has_position(mid):
+                continue
+            if self.is_on_cooldown(end_date):
+                continue
+            city_day = self.city_day_count(a["city"], a["date"])
+            if city_day >= cfg.MAX_POS_PER_CITY_DAY:
+                continue
+
+            pos = self.open_position(
+                mid, a["city"], a["date"],
+                a["bucket"], no_price, per_pos_size, end_date)
+            if pos:
+                opened += 1
+
+        first = bundle[0]
+        logger.info(f"  📦📦 区间覆盖开仓 [{first['city']} {first['date']}]: {opened}/{len(bundle)} 桶")
+        return opened
+
+    # ── 跨城市相关系数 ──
+
+    async def get_correlation(self, city_a: str, city_b: str,
+                               http: httpx.AsyncClient) -> float:
+        """
+        计算两个城市过去 90 天最高温的 Pearson 相关系数。
+        结果缓存在 correlation_cache 中。
+        """
+        key = tuple(sorted([city_a, city_b]))
+        if key in self.correlation_cache:
+            return self.correlation_cache[key]
+
+        coords_a = station_coords(city_a)
+        coords_b = station_coords(city_b)
+        if coords_a == (0.0, 0.0) or coords_b == (0.0, 0.0):
+            # 尝试 geocode 但用异步 client 查; 此处用已有数据
+            logger.warning(f"  跨城市 {city_a}-{city_b}: 缺少坐标，相关系数设为 0")
+            self.correlation_cache[key] = 0.0
+            return 0.0
+
+        end = date.today() - timedelta(days=1)
+        start = end - timedelta(days=90)
+
+        async def _fetch_temps(lat: float, lon: float) -> list[float]:
+            url = (f"{cfg.ARCHIVE_API}?latitude={lat}&longitude={lon}"
+                   f"&daily=temperature_2m_max&start_date={start}&end_date={end}&timezone=auto")
+            try:
+                r = await http.get(url, timeout=20)
+                r.raise_for_status()
+                data = r.json()
+                return data.get("daily", {}).get("temperature_2m_max", [])
+            except Exception as e:
+                logger.debug(f"  相关系数获取失败 {city_a}/{city_b}: {e}")
+                return []
+
+        a_temps = await _fetch_temps(coords_a[0], coords_a[1])
+        b_temps = await _fetch_temps(coords_b[0], coords_b[1])
+
+        pairs = [(a, b) for a, b in zip(a_temps, b_temps)
+                 if a is not None and b is not None]
+        if len(pairs) < 10:
+            logger.info(f"  跨城市 {city_a}-{city_b}: 有效数据不足 ({len(pairs)}天)，设相关系数=0")
+            self.correlation_cache[key] = 0.0
+            return 0.0
+
+        n = len(pairs)
+        sx = sum(p[0] for p in pairs)
+        sy = sum(p[1] for p in pairs)
+        sxy = sum(p[0] * p[1] for p in pairs)
+        sx2 = sum(p[0] ** 2 for p in pairs)
+        sy2 = sum(p[1] ** 2 for p in pairs)
+
+        num = n * sxy - sx * sy
+        den = math.sqrt((n * sx2 - sx ** 2) * (n * sy2 - sy ** 2))
+        corr = num / den if den > 0 else 0.0
+        corr = max(-1.0, min(1.0, corr))
+
+        self.correlation_cache[key] = corr
+        logger.info(f"  📊 跨城市相关系数 {city_a}-{city_b}: {corr:.3f} ({n}天数据)")
+        return corr
+
     def reset_state(self):
         """重置所有模擬數據，資金回到初始值"""
         self.positions.clear()
@@ -831,6 +1005,7 @@ class Engine:
         self.daily_pnl = 0.0
         self.today = date.today()
         self.capital_history = [(datetime.now(timezone.utc).isoformat(), cfg.INITIAL_CAPITAL)]
+        self.correlation_cache.clear()
         logger.info("🧹 模擬數據已重置，資金回到 ${:.0f}".format(cfg.INITIAL_CAPITAL))
 
     def summary(self) -> dict:
@@ -935,6 +1110,8 @@ async def main():
     logger.info(f"  門檻: P_mkt-P_model ≥ {cfg.CALIB_THRESH*100:.0f}% | P_mkt ∈ [{cfg.MIN_YES*100:.0f}¢,{cfg.MAX_YES*100:.0f}¢]")
     logger.info(f"  倉位: ${cfg.POS_MIN:.0f}-${cfg.POS_MAX:.0f} | 止盈 NO≥{cfg.NO_EXIT_TARGET:.2f}")
     logger.info(f"  預設站點: {len(STATION_IDX)} 個 + 動態 geocode 其他城市")
+    logger.info(f"  📦 区间覆盖: CORE_RANGE={cfg.CORE_RANGE} | 触发门槛 total_dev≥{cfg.RANGE_DEVIATION_THRESH:.0%}")
+    logger.info(f"  🔗 跨城市对冲: CITY_PAIRS={cfg.CITY_PAIRS if cfg.CITY_PAIRS else '未配置'}")
     logger.info("=" * 60)
 
     _engine = Engine()
@@ -1078,6 +1255,8 @@ async def main():
                     "date": parsed["date"], "mu": mu, "sigma": sigma,
                     "p_model": p_model, "p_market": p_market, "diff": diff,
                     "no_price": m["no_price"],
+                    "market_id": m["id"],
+                    "end_date": m.get("end_date", ""),
                 })
 
                 if diff >= cfg.CALIB_THRESH and cfg.MIN_YES <= p_market <= cfg.MAX_YES:
@@ -1101,10 +1280,112 @@ async def main():
             _latest_analyses = analyses
             _last_scan = datetime.now(timezone.utc).isoformat()
 
-            # ── 9. 模擬開倉，防重複 + 風控 ──
+            # ── 9. 区间覆盖模式 ──
+            # 将信号按 (city, date) 分组
+            signal_groups: dict[tuple[str, str], list[dict]] = {}
+            for sig in signals:
+                key = (sig["city"], sig["date"])
+                signal_groups.setdefault(key, []).append(sig)
+
+            # 检查每个 (city, date) 组是否有 CORE_RANGE 桶信号
+            bundle_plans: list[tuple[str, str, list[dict], float]] = []  # (city, date, bundle_analyses, total_dev)
+            bundled_market_ids: set[str] = set()
+            for (city, dt), grp_sigs in signal_groups.items():
+                # 找出该城市日期下所有 CORE_RANGE 桶的市场分析记录
+                bundle = _engine._find_bundle_markets(city, dt, analyses)
+                if len(bundle) < 2:
+                    continue  # 至少需要 2 个桶才构成区间
+
+                # 计算区间总概率偏差 = Σ(p_market - p_model)
+                total_dev = sum(a["diff"] for a in bundle)
+                avg_dev = total_dev / len(bundle)
+
+                logger.info(f"  🎯 区间覆盖 [{city} {dt}]: {len(bundle)}个桶 "
+                            f"total_dev={total_dev:+.1%} avg_dev={avg_dev:+.1%}")
+                for a in bundle:
+                    logger.info(f"    ├ {a['bucket']}: p_model={a['p_model']:.1%} p_mkt={a['p_market']:.1%} diff={a['diff']:+.1%}")
+
+                # 区间总概率偏差 > 12% 才触发
+                if total_dev >= cfg.RANGE_DEVIATION_THRESH:
+                    bundle_plans.append((city, dt, bundle, total_dev))
+                    for a in bundle:
+                        bundled_market_ids.add(a["market_id"])
+                    logger.info(f"  ✅ 区间覆盖触发 [{city} {dt}]: total_dev={total_dev:+.1%}")
+                else:
+                    logger.info(f"  ⏭️ 区间覆盖未达标 [{city} {dt}]: total_dev={total_dev:+.1%} < threshold={cfg.RANGE_DEVIATION_THRESH:.0%}")
+
+            # ── 10. 跨城市对冲 ──
+            cross_city_signal_pairs: list[tuple[dict, dict, str, str]] = []  # (sig_a, sig_b, city_a, city_b)
+            if cfg.CITY_PAIRS and len(signal_groups) >= 2:
+                for city_a, city_b in cfg.CITY_PAIRS:
+                    # 找同一天两地都有信号
+                    dates_a: dict[str, list[dict]] = {}
+                    dates_b: dict[str, list[dict]] = {}
+                    for (c, dt), sg in signal_groups.items():
+                        if c == city_a:
+                            dates_a.setdefault(dt, []).extend(sg)
+                        elif c == city_b:
+                            dates_b.setdefault(dt, []).extend(sg)
+
+                    shared_dates = set(dates_a.keys()) & set(dates_b.keys())
+                    if not shared_dates:
+                        continue
+
+                    # 获取相关系数
+                    corr = await _engine.get_correlation(city_a, city_b, http)
+                    logger.info(f"  🔗 跨城市对冲 {city_a}-{city_b}: ρ={corr:.3f} 共享日期={shared_dates}")
+
+                    if corr > 0.6:
+                        for dt in shared_dates:
+                            # 取每个城市第一个信号配对
+                            for sig_a in dates_a[dt]:
+                                for sig_b in dates_b[dt]:
+                                    cross_city_signal_pairs.append((sig_a, sig_b, city_a, city_b))
+                                    logger.info(f"  ✅ 跨城市对冲触发 {city_a}+{city_b} {dt}: "
+                                                f"ρ={corr:.3f} > 0.6")
+                                    break
+                                break
+
+            # ── 11. 开仓阶段：区间覆盖优先 → 跨城市 → 单信号 ──
             opened = 0
+
+            # 11a. 区间覆盖开仓
+            for city, dt, bundle, total_dev in bundle_plans:
+                n = _engine.open_range_positions(bundle, None)
+                opened += n
+                if n:
+                    logger.info(f"  📦📦 区间覆盖开仓 [{city} {dt}]: {n}/{len(bundle)} 桶 (total_dev={total_dev:+.1%})")
+
+            # 11b. 跨城市对冲开仓（配对挂单）
+            for sig_a, sig_b, city_a, city_b in cross_city_signal_pairs:
+                # 如果这些信号已被区间覆盖覆盖，跳过
+                if sig_a["market_id"] in bundled_market_ids or sig_b["market_id"] in bundled_market_ids:
+                    continue
+                # 逐一开仓两市信号
+                for sig in (sig_a, sig_b):
+                    if _engine.has_position(sig["market_id"]):
+                        continue
+                    if _engine.is_on_cooldown(sig.get("end_date", "")):
+                        continue
+                    size = _engine.calc_position_size(sig["diff"])
+                    if _engine.capital < size:
+                        continue
+                    pos = _engine.open_position(
+                        sig["market_id"], sig["city"], sig["date"],
+                        sig["bucket"], sig["no_price"], size, sig.get("end_date", ""))
+                    if pos:
+                        opened += 1
+
+            # 11c. 普通单信号开仓（跳过已被区间覆盖和跨城市覆盖的）
             if signals:
                 for sig in signals:
+                    # 已被区间覆盖覆盖 → 跳过
+                    if sig["market_id"] in bundled_market_ids:
+                        continue
+                    # 已被跨城市覆盖 → 跳过（跨城市已开过）
+                    if any(sig["market_id"] == s["market_id"] for pair in cross_city_signal_pairs for s in pair[:2]):
+                        continue
+                    # 已在持倉或已平倉 → 跳過（含 closed_trades）
                     # Bug 1: 已在持倉或已平倉 → 跳過（含 closed_trades）
                     if _engine.has_position(sig["market_id"]):
                         continue
