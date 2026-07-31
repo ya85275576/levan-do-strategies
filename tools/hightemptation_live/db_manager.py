@@ -12,6 +12,18 @@ HighTempTation — SQLite 数据库管理器
   - deviation_logs:    偏差监控记录（新增）
   - ab_tests:          A/B 测试配置（新增）
   - ab_trade_mapping:  A/B 测试交易关联（新增）
+  - fsm_orders:        订单状态机 FSM 记录（第二波）
+  - microstructure_snapshots: 订单簿微观结构快照（第二波）
+  - arbitrage_signals: 套利信号（第二波）
+  - ml_residuals:      ML 残差学习记录（第二波）
+  - chaos_events:      混沌工程事件（第二波）
+  - onchain_txs:       链上交易（Gas/Nonce/MEV/路由, 第四波）
+  - gas_history:       Gas 价格历史（第四波）
+  - audit_logs:        不可篡改审计日志（哈希链, 第四波）
+  - oracle_risk:       预言机风险评估（第四波）
+  - antigame_actions:  反博弈动作日志（第四波）
+  - meta_decisions:    元控制器决策（第四波）
+  - human_approvals:   人机协同审批记录（第四波）
 
 查询:
   - get_bias(city, days=30):         滚动偏差（预报 - 实况）
@@ -250,6 +262,105 @@ class TradeDB:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_chaos_ts ON chaos_events(ts);
+
+        -- ── 第四波: 链上执行层 ──
+        CREATE TABLE IF NOT EXISTS onchain_txs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            account TEXT,
+            nonce INTEGER,
+            gas_base REAL,
+            gas_priority REAL,
+            gas_max_fee REAL,
+            mev_score REAL,
+            route TEXT DEFAULT 'public',
+            multicall_batch INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'pending',
+            tx_hash TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_onchain_ts ON onchain_txs(ts);
+
+        -- ── 第四波: Gas 历史 ──
+        CREATE TABLE IF NOT EXISTS gas_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            base_fee REAL NOT NULL,
+            priority_fee REAL DEFAULT 0,
+            congestion REAL DEFAULT 0,
+            network TEXT DEFAULT 'polygon',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_gas_ts ON gas_history(ts);
+
+        -- ── 第四波: 不可篡改审计日志（哈希链）──
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            seq INTEGER NOT NULL UNIQUE,
+            ts REAL NOT NULL,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            prev_hash TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            anchor_ref TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_seq ON audit_logs(seq);
+
+        -- ── 第四波: 预言机风险评估 ──
+        CREATE TABLE IF NOT EXISTS oracle_risk (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            market TEXT NOT NULL,
+            total_score REAL,
+            level TEXT,
+            position_factor REAL,
+            scores_json TEXT DEFAULT '{}',
+            recommendations TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_oracle_ts ON oracle_risk(ts);
+
+        -- ── 第四波: 反博弈动作 ──
+        CREATE TABLE IF NOT EXISTS antigame_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            action_type TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            is_noise INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_antigame_ts ON antigame_actions(ts);
+
+        -- ── 第四波: 元控制器决策 ──
+        CREATE TABLE IF NOT EXISTS meta_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            context_json TEXT DEFAULT '{}',
+            chosen_strategy TEXT,
+            confidence REAL,
+            bandit_arm TEXT,
+            ppo_arm TEXT,
+            bma_weights TEXT DEFAULT '[]',
+            reward REAL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_meta_ts ON meta_decisions(ts);
+
+        -- ── 第四波: 人机协同审批 ──
+        CREATE TABLE IF NOT EXISTS human_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL UNIQUE,
+            level TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending',
+            decided_by TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            decided_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_status ON human_approvals(status);
         """)
         self.conn.commit()
 
@@ -716,6 +827,153 @@ class TradeDB:
             "SELECT * FROM chaos_events ORDER BY ts DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── 第四波: 链上执行层 ──
+
+    def store_onchain_tx(self, ts: int, account: str = "", nonce: int = -1,
+                         gas_base: float = 0, gas_priority: float = 0,
+                         gas_max_fee: float = 0, mev_score: float = 0,
+                         route: str = "public", multicall_batch: int = 1,
+                         status: str = "pending", tx_hash: str = "") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO onchain_txs(ts, account, nonce, gas_base, gas_priority,
+                                        gas_max_fee, mev_score, route, multicall_batch,
+                                        status, tx_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """, (ts, account, nonce, gas_base, gas_priority, gas_max_fee,
+                   mev_score, route, multicall_batch, status, tx_hash))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入链上交易失败: {e}")
+            return False
+
+    def store_gas(self, ts: int, base_fee: float, priority_fee: float = 0,
+                  congestion: float = 0, network: str = "polygon") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO gas_history(ts, base_fee, priority_fee, congestion, network)
+                VALUES(?,?,?,?,?)
+            """, (ts, base_fee, priority_fee, congestion, network))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入 Gas 历史失败: {e}")
+            return False
+
+    # ── 第四波: 密钥安全（审计哈希链）──
+
+    def append_audit(self, seq: int, ts: float, actor: str, action: str,
+                     payload_hash: str, prev_hash: str, hash_: str,
+                     anchor_ref: str = "") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO audit_logs(seq, ts, actor, action, payload_hash,
+                                       prev_hash, hash, anchor_ref)
+                VALUES(?,?,?,?,?,?,?,?)
+            """, (seq, ts, actor, action, payload_hash, prev_hash, hash_, anchor_ref))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入审计日志失败: {e}")
+            return False
+
+    def verify_audit_chain(self) -> Tuple[bool, Optional[int]]:
+        """重算哈希链, 校验审计日志未被篡改"""
+        import hashlib as _hl
+        rows = self.conn.execute("SELECT * FROM audit_logs ORDER BY seq").fetchall()
+        prev = "GENESIS"
+        for r in rows:
+            recalc = _hl.sha256((f"{r['prev_hash']}|{r['seq']}|{r['actor']}|"
+                                 f"{r['action']}|{r['payload_hash']}").encode()).hexdigest()
+            if r["prev_hash"] != prev or recalc != r["hash"]:
+                return False, r["seq"]
+            prev = r["hash"]
+        return True, None
+
+    # ── 第四波: 预言机风险 ──
+
+    def store_oracle_risk(self, ts: int, market: str, total_score: float,
+                          level: str, position_factor: float,
+                          scores: Optional[dict] = None,
+                          recommendations: str = "") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO oracle_risk(ts, market, total_score, level, position_factor,
+                                        scores_json, recommendations)
+                VALUES(?,?,?,?,?,?,?)
+            """, (ts, market, total_score, level, position_factor,
+                   json.dumps(scores or {}, ensure_ascii=False), recommendations))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入预言机风险失败: {e}")
+            return False
+
+    # ── 第四波: 反博弈 ──
+
+    def store_antigame_action(self, ts: int, action_type: str,
+                              detail: str = "", is_noise: int = 0) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO antigame_actions(ts, action_type, detail, is_noise)
+                VALUES(?,?,?,?)
+            """, (ts, action_type, detail, is_noise))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入反博弈动作失败: {e}")
+            return False
+
+    # ── 第四波: 元控制器 ──
+
+    def store_meta_decision(self, ts: int, context: Optional[dict] = None,
+                            chosen_strategy: str = "", confidence: float = 0,
+                            bandit_arm: str = "", ppo_arm: str = "",
+                            bma_weights: Optional[list] = None,
+                            reward: float = 0) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO meta_decisions(ts, context_json, chosen_strategy, confidence,
+                                           bandit_arm, ppo_arm, bma_weights, reward)
+                VALUES(?,?,?,?,?,?,?,?)
+            """, (ts, json.dumps(context or {}, ensure_ascii=False), chosen_strategy,
+                   confidence, bandit_arm, ppo_arm,
+                   json.dumps(bma_weights or [], ensure_ascii=False), reward))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入元控制器决策失败: {e}")
+            return False
+
+    # ── 第四波: 人机协同 ──
+
+    def store_approval(self, request_id: str, level: str, action: str,
+                       payload: Optional[dict] = None) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO human_approvals(request_id, level, action, payload)
+                VALUES(?,?,?,?)
+            """, (request_id, level, action, json.dumps(payload or {}, ensure_ascii=False)))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入审批请求失败: {e}")
+            return False
+
+    def update_approval(self, request_id: str, status: str, decided_by: str = "") -> bool:
+        try:
+            self.conn.execute("""
+                UPDATE human_approvals SET status=?, decided_by=?,
+                    decided_at=datetime('now')
+                WHERE request_id=?
+            """, (status, decided_by, request_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"更新审批状态失败: {e}")
+            return False
 
     def close(self):
         if self._conn:
