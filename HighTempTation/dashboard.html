@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HighTempTation 实盘仪表板</title>
+<script src="/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0d1117; color: #c9d1d9; min-height: 100vh;
+  }
+  .container { max-width: 1440px; margin: 0 auto; padding: 16px 20px; }
+
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 18px; margin-bottom: 14px;
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #30363d; border-radius: 12px; flex-wrap: wrap; gap: 8px;
+  }
+  .header-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .logo { font-size: 18px; font-weight: 800; letter-spacing: 0.4px; color: #58a6ff; }
+  .logo span { color: #f0883e; }
+
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 16px; font-size: 11px; font-weight: 600;
+  }
+  .status-pill.online { background: #1b3d2b; color: #3fb950; border: 1px solid #2ea043; }
+  .status-pill.offline { background: #3d1b1b; color: #f85149; border: 1px solid #da3633; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .status-dot.green { background: #3fb950; box-shadow: 0 0 4px #3fb950; }
+  .status-dot.red { background: #f85149; box-shadow: 0 0 4px #f85149; }
+
+  .refresh-bar { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #484f58; }
+  .refresh-bar .countdown { color: #8b949e; font-family: 'Consolas',monospace; min-width: 28px; text-align: center; }
+  .refresh-bar .bar-track { width: 50px; height: 3px; background: #21262d; border-radius: 2px; overflow: hidden; }
+  .refresh-bar .bar-fill { height: 100%; background: #58a6ff; border-radius: 2px; transition: width 0.3s linear; }
+
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card-title {
+    font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase;
+    letter-spacing: 0.3px; margin-bottom: 12px; display: flex; align-items: center; gap: 6px;
+  }
+
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  }
+  @media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 540px) { .stats-grid { grid-template-columns: 1fr; } }
+  .stat-card {
+    background: linear-gradient(135deg, #1a1d29 0%, #161b22 100%);
+    border: 1px solid #2d3343; border-radius: 8px; padding: 10px 12px;
+    position: relative; overflow: hidden;
+  }
+  .stat-card .sv { font-size: 20px; font-weight: 700; font-family: 'Consolas', monospace; }
+  .stat-card .sl { font-size: 10px; color: #6a7283; margin-top: 1px; text-transform: uppercase; letter-spacing: 0.2px; }
+  .stat-card .sc { font-size: 11px; font-weight: 600; margin-top: 2px; }
+  .positive { color: #0ecb81; }
+  .negative { color: #f6465d; }
+  .neutral { color: #8b949e; }
+
+  .chart-container { position: relative; height: 200px; width: 100%; }
+
+  .data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .data-table th {
+    text-align: left; padding: 6px 8px; border-bottom: 2px solid #30363d;
+    color: #8b949e; font-weight: 600; font-size: 10px; text-transform: uppercase; white-space: nowrap;
+  }
+  .data-table td { padding: 5px 8px; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  .data-table tr:hover td { background: #1c2128; }
+
+  .dir-yes { color: #0ecb81; font-weight: 700; }
+  .dir-no { color: #f6465d; font-weight: 700; }
+
+  .scroll-wrap { max-height: 320px; overflow-y: auto; }
+  .scroll-wrap-sm { max-height: 240px; overflow-y: auto; }
+
+  .toggle-on { color: #3fb950 !important; cursor: pointer; }
+  .toggle-off { color: #f85149 !important; cursor: pointer; }
+  #strategyTable td:last-child { font-size: 11px; font-weight: 600; text-align: center; }
+  #strategyTable td:last-child:hover { text-decoration: underline; }
+
+  .empty-state { text-align: center; padding: 24px 12px; color: #484f58; }
+  .empty-state .icon { font-size: 26px; margin-bottom: 4px; }
+  .empty-state .text { font-size: 12px; }
+
+  .loading { text-align: center; padding: 40px; color: #8b949e; }
+  .loading .spinner {
+    width: 28px; height: 28px; border: 3px solid #21262d;
+    border-top-color: #58a6ff; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .footer {
+    text-align: center; padding: 14px; color: #484f58; font-size: 10px;
+    border-top: 1px solid #21262d; margin-top: 28px;
+  }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div>加载仪表板数据...</div>
+  </div>
+</div>
+
+<script>
+const FETCH_INTERVAL = 30000;
+let equityChart = null;
+let strategyChart = null;
+let refreshTimer = null;
+let countdownValue = FETCH_INTERVAL / 1000;
+let lastRawData = null;
+let lastStrategiesData = null;
+
+/* ==================================================================
+   数据模型：dashboardData
+   {
+     capital: number,         // 当前资金
+     total_pnl: number,       // 总盈亏
+     open_count: number,      // 持仓数量
+     open: [                  // 持仓列表
+       { city, bucket, entry_no, curr_no, pnl, entry_time, tp_prices, tp_status, tp_pnl }
+     ],
+     recent_closed: [         // 最近平仓
+       { city, bucket, pnl, close_time, tp_order }
+     ]
+   }
+   ================================================================== */
+
+/**
+ * generateMockData() — 无后端时的演示数据
+ */
+function generateMockData() {
+  const now = Date.now();
+  const baseCapital = 10000;
+  const mockPositions = [
+    { city: 'Tokyo', bucket: '37°C', entry_no: 0.35, curr_no: 0.42, pnl: 7.00, entry_time: now - 7200000, tp_prices: [0.50, 0.65, 0.80], tp_status: ['pending','pending','pending'], tp_pnl: [0,0,0] },
+    { city: 'Hong Kong', bucket: '33°C', entry_no: 0.22, curr_no: 0.28, pnl: 6.00, entry_time: now - 3600000, tp_prices: [0.40, 0.55, 0.70], tp_status: ['pending','pending','pending'], tp_pnl: [0,0,0] },
+    { city: 'Singapore', bucket: '34°C', entry_no: 0.18, curr_no: 0.31, pnl: 13.00, entry_time: now - 1800000, tp_prices: [0.45, 0.60, 0.75], tp_status: ['hit','pending','pending'], tp_pnl: [13.50,0,0] },
+  ];
+  const mockClosed = [
+    { city: 'New York', bucket: '29°C', pnl: 8.50, close_time: now - 600000, tp_order: 1 },
+    { city: 'London', bucket: '22°C', pnl: -3.20, close_time: now - 1200000, tp_order: 0 },
+    { city: 'Sydney', bucket: '26°C', pnl: 12.40, close_time: now - 3600000, tp_order: 2 },
+  ];
+  return {
+    capital: baseCapital + 7 + 6 + 13 + 8.5 - 3.2 + 12.4,
+    total_pnl: 7 + 6 + 13 + 8.5 - 3.2 + 12.4,
+    open_count: mockPositions.length,
+    open: mockPositions,
+    recent_closed: mockClosed,
+  };
+}
+
+/**
+ * normaliseApiData(d) — 将 /api/status 原始响应映射为 dashboardData 格式
+ *
+ * 兼容两种格式:
+ *   Bot 格式: {capital, total_pnl, open_count, open: [{city, bucket, entry_no, curr_no, pnl}], recent_closed: [{city, bucket, pnl, realized, exit_reason}], initial_capital, capital_history}
+ *   Webhook 格式: {equity: {equity, total_pnl, initial_capital}, positions: [{symbol, side, entry_price, current_price, pnl, ...}], closed_trades: [{symbol, side, pnl, exit_time, tp_order, ...}], capital_history}
+ */
+function normaliseApiData(d) {
+  if (!d) return null;
+
+  // 检测格式: Bot 格式直接用 top-level 字段
+  const isBotFormat = d.capital != null || d.initial_capital != null;
+
+  if (isBotFormat) {
+    // ── Bot (/api/status) 格式 ──
+    const open = (d.open || []).map(p => ({
+      city: p.city || '--',
+      bucket: p.bucket || '--',
+      entry_no: p.entry_no || 0,
+      curr_no: p.curr_no || 0,
+      pnl: p.pnl || 0,
+      entry_time: p.entry_time || null,
+      tp_prices: p.tp_prices || [null, null, null],
+      tp_status: p.tp_status || ['pending', 'pending', 'pending'],
+      tp_pnl: p.tp_pnl || [0, 0, 0],
+      size: p.size || null,
+    }));
+
+    const recentClosed = (d.recent_closed || []).slice(-30).map(t => ({
+      city: t.city || '--',
+      bucket: t.bucket || '--',
+      pnl: t.realized != null ? t.realized : (t.pnl || 0),
+      close_time: t.exit_time || null,
+      tp_order: t.tp_order,
+      entry_price: t.entry_no || null,
+      exit_price: t.curr_no || null,
+      exit_reason: t.exit_reason || '',
+    }));
+
+    return {
+      capital: d.capital || d.initial_capital || 0,
+      total_pnl: d.total_pnl || 0,
+      open_count: d.open_count || open.length,
+      open,
+      recent_closed: recentClosed,
+      raw: d,
+    };
+  } else {
+    // ── Webhook (server.js /api/status) 格式 ──
+    const eq = d.equity || {};
+    const positions = d.positions || [];
+    const closedTrades = d.closed_trades || [];
+
+    const capital = eq.equity != null ? eq.equity : (eq.initial_capital || 0);
+    const totalPnl = eq.total_pnl != null ? eq.total_pnl : 0;
+
+    const open = positions.map(p => ({
+      city: p.symbol || '--',
+      bucket: p.side === 'long' ? 'YES' : 'NO',
+      entry_no: p.entry_price || 0,
+      curr_no: p.current_price || 0,
+      pnl: p.pnl || 0,
+      entry_time: p.entry_time || null,
+      tp_prices: p.tp_prices || [null, null, null],
+      tp_status: p.tp_status || ['pending', 'pending', 'pending'],
+      tp_pnl: p.tp_pnl || [0, 0, 0],
+      leverage: p.leverage || null,
+      size: p.size || null,
+    }));
+
+    const recentClosed = (closedTrades || []).slice(-30).map(t => ({
+      city: t.symbol || '--',
+      bucket: t.side === 'long' ? 'YES' : 'NO',
+      pnl: t.pnl || 0,
+      close_time: t.close_time || t.exit_time || null,
+      tp_order: t.tp_order,
+      entry_price: t.entry_price || null,
+      exit_price: t.exit_price || null,
+    }));
+
+    return {
+      capital,
+      total_pnl: totalPnl,
+      open_count: positions.length,
+      open,
+      recent_closed: recentClosed,
+      raw: d,
+    };
+  }
+}
+
+/* ================================================================== */
+function $(s) { return document.querySelector(s); }
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function pnlCls(v) { return v == null ? '' : (v > 0 ? 'positive' : (v < 0 ? 'negative' : '')); }
+function pnlSign(v) { return v == null ? '' : (v > 0 ? '+' : ''); }
+
+async function fetchData() {
+  // 尝试从 /api/status 获取真实数据
+  try {
+    const r = await fetch('/api/status');
+    if (r.ok) {
+      const raw = await r.json();
+      const normalised = normaliseApiData(raw);
+      if (normalised && normalised.capital != null) {
+        return normalised;
+      }
+    }
+  } catch(e) {
+    console.warn('[仪表板] /api/status 请求失败，使用模拟数据:', e.message);
+  }
+  // 降级：返回模拟数据
+  return generateMockData();
+}
+
+async function fetchStrategiesData() {
+  try {
+    const r = await fetch('/api/strategies');
+    if (r.ok) {
+      const raw = await r.json();
+      if (raw && raw.strategies) {
+        return raw;
+      }
+    }
+  } catch(e) {
+    console.warn('[仪表板] /api/strategies 请求失败:', e.message);
+  }
+  return { strategies: {}, toggles: {}, total_strategies: 0, enabled_count: 0 };
+}
+
+/* =========== RENDER: HEADER =========== */
+function renderHeader(d) {
+  return '<div class="header"><div class="header-left">'+
+    '<div class="logo">HighTemp<span>Tation</span>®</div>'+
+    '<span class="status-pill online"><span class="status-dot green"></span>运行中</span>'+
+    '</div><div class="header-right">'+
+    '<div class="refresh-bar"><span class="countdown" id="countdown">'+countdownValue+'s</span>'+
+    '<div class="bar-track"><div class="bar-fill" id="refreshBarFill"></div></div></div>'+
+    '</div></div>';
+}
+
+/* =========== RENDER: STATS =========== */
+function renderStats(d) {
+  const totalPnl = d.total_pnl || 0;
+  const capital = d.capital || 0;
+  const initCap = capital - total_pnl;
+  const initCapStr = initCap > 0 ? '初始 $'+initCap.toLocaleString('en-US',{minimumFractionDigits:2}) : '';
+
+  return '<div class="card"><div class="card-title">📊 账户总览</div><div class="stats-grid">'+
+    '<div class="stat-card" style="border-left:3px solid #58a6ff"><div class="sv" style="color:#58a6ff">$'+Number(capital).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">当前资金</div><div class="sc neutral">'+initCapStr+'</div></div>'+
+    '<div class="stat-card" style="border-left:3px solid '+(totalPnl>=0?'#0ecb81':'#f6465d')+'"><div class="sv" style="color:'+(totalPnl>=0?'#0ecb81':'#f6465d')+'">'+pnlSign(totalPnl)+'$'+Math.abs(totalPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</div><div class="sl">总 P&L</div></div>'+
+    '<div class="stat-card" style="border-left:3px solid #f0883e"><div class="sv" style="color:#f0883e">'+(d.recent_closed||[]).length+'</div><div class="sl">最近平仓</div></div>'+
+    '<div class="stat-card" style="border-left:3px solid #bc8cff"><div class="sv" style="color:#bc8cff">'+d.open_count+'</div><div class="sl">持仓</div><div class="sc neutral">'+(d.open||[]).filter(p=>p.bucket==='YES').length+'多 · '+(d.open||[]).filter(p=>p.bucket==='NO').length+'空</div></div>'+
+    '</div></div>';
+}
+
+/* =========== RENDER: EQUITY CHART =========== */
+function renderChart(d) {
+  const ch = d.raw && d.raw.capital_history ? d.raw.capital_history : [];
+  if (ch.length < 2) {
+    return '<div class="card"><div class="card-title">📈 资金曲线</div><div class="chart-container"><canvas id="eqChart"></canvas></div></div>';
+  }
+  return '<div class="card"><div class="card-title">📈 资金曲线 <span style="font-weight:400;color:#484f58;font-size:10px">'+ch.length+' 个采样点</span></div><div class="chart-container"><canvas id="eqChart"></canvas></div></div>';
+}
+
+function drawChart(d) {
+  const ch = d.raw && d.raw.capital_history ? d.raw.capital_history : [];
+  const canvas = document.getElementById('eqChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  // 过滤无效数据点，防止 Invalid Date 崩溃
+  const valid = ch.filter(p => p && p.t && p.e != null);
+  if (valid.length < 2) {
+    if (equityChart) { equityChart.destroy(); equityChart=null; }
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#484f58'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('等待更多数据...',canvas.width/2,canvas.height/2);
+    return;
+  }
+
+  const labels = valid.map(p=>{ try { return new Date(p.t).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}); } catch(e) { return ''; }});
+  const data = valid.map(p=>p.e);
+  const startVal = data[0], endVal = data[data.length-1];
+  const isUp = endVal >= startVal;
+  const lineColor = isUp ? '#0ecb81' : '#f6465d';
+
+  if (equityChart) {
+    equityChart.data.labels = labels;
+    equityChart.data.datasets[0].data = data;
+    equityChart.data.datasets[0].borderColor = lineColor;
+    equityChart.update('none');
+    return;
+  }
+
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '权益 ($)',
+        data,
+        borderColor: lineColor,
+        backgroundColor: g=>{
+          const gc=g.chart.ctx.createLinearGradient(0,0,0,200);
+          gc.addColorStop(0, isUp ? 'rgba(14,203,129,0.2)' : 'rgba(246,70,93,0.2)');
+          gc.addColorStop(1, 'rgba(14,203,129,0.01)');
+          return gc;
+        },
+        fill: true, tension: 0.3, pointRadius: 0, pointHitRadius: 6, borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1c2128', titleColor: '#8b949e', bodyColor: '#f0f6fc',
+          borderColor: '#30363d', borderWidth: 1, padding: 6,
+          callbacks: { label: ctx=>'$'+Number(ctx.raw).toLocaleString('en-US',{minimumFractionDigits:2}) }
+        }
+      },
+      scales: {
+        x: { display: true, grid: {color:'#21262d',drawBorder:false}, ticks: {color:'#484f58',font:{size:9},maxTicksLimit:8} },
+        y: { display: true, grid: {color:'#21262d',drawBorder:false}, ticks: {color:'#484f58',font:{size:9},callback:v=>'$'+v.toLocaleString()} }
+      }
+    }
+  });
+}
+
+/* =========== RENDER: POSITIONS TABLE =========== */
+function calcDuration(entryTime) {
+  if (!entryTime) return '—';
+  const diff = Date.now() - new Date(entryTime).getTime();
+  if (diff < 60000) return '<1m';
+  if (diff < 3600000) return Math.floor(diff/60000)+'m';
+  if (diff < 86400000) return Math.floor(diff/3600000)+'h';
+  return Math.floor(diff/86400000)+'d';
+}
+
+function renderPositions(d) {
+  const open = d.open || [];
+  let html = '<div class="card"><div class="card-title">💼 持仓 <span style="font-weight:400;color:#6a7283;font-size:10px">'+open.length+' 个</span></div>';
+  if (open.length===0) {
+    html += '<div class="empty-state"><div class="icon">📦</div><div class="text">暂无持仓</div></div></div>';
+    return html;
+  }
+
+  html += '<div class="scroll-wrap"><table class="data-table"><thead><tr>'+
+    '<th>品种</th><th>方向</th><th>数量</th><th>入场价</th><th>当前价</th><th>浮盈亏</th><th>时长</th><th>偏差</th><th>TP1/2/3</th>'+
+  '</tr></thead><tbody>';
+
+  for (const p of open) {
+    const dir = p.bucket;
+    const dirCls = dir === 'YES' ? 'dir-yes' : 'dir-no';
+
+    const shares = p.size != null ? Number(p.size).toFixed(4) : '—';
+    const entryStr = p.entry_no ? '$'+Number(p.entry_no).toFixed(p.entry_no<1 ? 6 : 2) : '—';
+    const curStr = p.curr_no ? '$'+Number(p.curr_no).toFixed(p.curr_no<1 ? 6 : 2) : '—';
+    const pnlStr = pnlSign(p.pnl)+'$'+Math.abs(p.pnl||0).toLocaleString('en-US',{minimumFractionDigits:2});
+    const dur = calcDuration(p.entry_time);
+
+    let dev = 0;
+    if (p.entry_no && p.entry_no > 0 && p.curr_no && p.curr_no > 0) {
+      if (dir==='YES') { dev = (p.curr_no - p.entry_no) / p.entry_no; }
+      else { dev = (p.entry_no - p.curr_no) / p.entry_no; }
+    }
+    const devStr = (dev >= 0 ? '+' : '') + (dev*100).toFixed(2)+'%';
+    const devCls = dev >= 0 ? 'color:#0ecb81' : 'color:#f6465d';
+
+    const tp = p.tp_prices || [null,null,null];
+    const tps = tp.map(v => v && v>0 ? '$'+Number(v).toFixed(v<1?6:2) : '--').join(' / ');
+
+    html += '<tr>'+
+      '<td style="font-weight:600">'+esc(p.city)+'</td>'+
+      '<td><span class="'+dirCls+'">'+dir+'</span></td>'+
+      '<td style="font-family:Consolas,monospace">'+shares+'</td>'+
+      '<td style="font-family:Consolas,monospace">'+entryStr+'</td>'+
+      '<td style="font-family:Consolas,monospace">'+curStr+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+pnlCls(p.pnl)+'">'+pnlStr+'</td>'+
+      '<td style="color:#8b949e;font-size:10px">'+dur+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+devCls+'">'+devStr+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-size:10px;color:#6a7283">'+tps+'</td>'+
+    '</tr>';
+  }
+
+  html += '</tbody></table></div></div>';
+  return html;
+}
+
+/* =========== RENDER: CLOSED TRADES =========== */
+function renderClosed(d) {
+  const closed = d.recent_closed || [];
+  if (closed.length===0) {
+    return '<div class="card"><div class="card-title">📜 最近平仓</div><div class="empty-state"><div class="icon">📭</div><div class="text">暂无平仓记录</div></div></div>';
+  }
+
+  const totalPnl = closed.reduce((s,t)=>s+(t.pnl||0), 0);
+  const pnlColor = totalPnl>=0?'#3fb950':'#f85149';
+
+  let html = '<div class="card"><div class="card-title">📜 最近平仓 <span style="font-weight:400;color:#484f58;font-size:10px">共 '+closed.length+' 笔 · 总盈亏 <span style="color:'+pnlColor+'">'+
+    pnlSign(totalPnl)+'$'+Math.abs(totalPnl).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></span></div>';
+
+  html += '<div class="scroll-wrap-sm"><table class="data-table"><thead><tr>'+
+    '<th>品种</th><th>方向</th><th>盈亏</th><th>归因</th><th>时间</th>'+
+  '</tr></thead><tbody>';
+
+  for (const t of closed.slice(-20).reverse()) {
+    const sideClr = t.bucket==='YES'?'#0ecb81':'#f6465d';
+    const pnlStr = pnlSign(t.pnl)+'$'+Math.abs(t.pnl||0).toLocaleString('en-US',{minimumFractionDigits:2});
+    const pnlClr = (t.pnl||0)>=0?'#0ecb81':'#f6465d';
+
+    let attr = '—';
+    if (t.tp_order===1) attr='<span style="color:#0ecb81;font-weight:600">TP1</span>';
+    else if (t.tp_order===2) attr='<span style="color:#0ecb81;font-weight:600">TP2</span>';
+    else if (t.tp_order===3) attr='<span style="color:#0ecb81;font-weight:600">TP3</span>';
+    else if (t.tp_order===0) attr='<span style="color:#f6465d;font-weight:600">SL</span>';
+
+    html += '<tr><td style="font-weight:600">'+esc(t.city)+'</td>'+
+      '<td><span style="color:'+sideClr+';font-weight:600">'+esc(t.bucket)+'</span></td>'+
+      '<td style="text-align:right;font-weight:600;color:'+pnlClr+'">'+pnlStr+'</td>'+
+      '<td style="text-align:center">'+attr+'</td>'+
+      '<td style="color:#8b949e;font-size:10px">'+fmtTime(t.close_time)+'</td></tr>';
+  }
+
+  html += '</tbody></table></div></div>';
+  return html;
+}
+
+/* =========== STRATEGY ATTRIBUTION COLORS =========== */
+const STRATEGY_COLORS = {
+  'MODEL': '#58a6ff',
+  'BAYESIAN': '#bc8cff',
+  'METAR': '#f0883e',
+  'HKO': '#da3633',
+  'LADDER': '#3fb950',
+  '_NEAR_SETTLEMENT': '#f0c000',
+};
+
+const STRATEGY_ORDER = ['MODEL','BAYESIAN','METAR','HKO','LADDER','_NEAR_SETTLEMENT'];
+
+/* =========== RENDER: STRATEGY ATTRIBUTION =========== */
+function renderStrategies(sd) {
+  if (!sd || !sd.strategies) return '<div class="card"><div class="card-title">📊 策略归因</div><div class="empty-state"><div class="icon">📊</div><div class="text">等待策略数据...</div></div></div>';
+
+  const strats = sd.strategies;
+  const keys = Object.keys(strats).filter(k => k !== '_NEAR_SETTLEMENT');
+  
+  // 总计
+  const totalPnl = keys.reduce((s,k) => s + (strats[k].total_pnl || 0), 0);
+  const totalOpen = keys.reduce((s,k) => s + (strats[k].is_open_pnl || 0), 0);
+  const nearSt = strats['_NEAR_SETTLEMENT'] || {};
+
+  let html = '<div class="card"><div class="card-title">📊 策略归因 <span style="font-weight:400;color:#484f58;font-size:10px">已实现 $'+
+    (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' · 浮盈 $' + (totalOpen >= 0 ? '+' : '') + totalOpen.toFixed(2) +
+    ' · 临近结算 <span style="color:#f0c000">$' + (nearSt.total_pnl != null ? ((nearSt.total_pnl>=0?'+':'')+nearSt.total_pnl.toFixed(2)) : '0') + '</span></span></div>';
+
+  // ── 图表容器 ──
+  html += '<div class="chart-container" style="height:180px;margin-bottom:8px"><canvas id="strategyChart"></canvas></div>';
+
+  // ── 策略表格（含开关按钮）──
+  html += '<div class="scroll-wrap-sm"><table class="data-table" id="strategyTable"><thead><tr>'+
+    '<th>策略</th><th>交易</th><th>胜率</th><th>已实现</th><th>浮动</th><th>合计</th><th>控制</th>'+
+  '</tr></thead><tbody>';
+
+  const order = [...STRATEGY_ORDER];
+  for (const key of order) {
+    const s = strats[key];
+    if (!s) continue;
+    const color = STRATEGY_COLORS[key] || '#8b949e';
+    const isNear = key === '_NEAR_SETTLEMENT';
+    const enabled = sd.toggles && sd.toggles[key] !== undefined ? sd.toggles[key] : true;
+    const btnClass = isNear ? '' : (enabled ? 'toggle-on' : 'toggle-off');
+    const btnText = isNear ? '—' : (enabled ? '🟢 运行' : '🔴 暂停');
+    const toggleKey = isNear ? '' : key;
+
+    const total = s.total || 0;
+    const wr = s.win_rate || 0;
+    const closedPnl = s.total_pnl || 0;
+    const openPnl = s.is_open_pnl || 0;
+    const totalP = closedPnl + openPnl;
+
+    html += '<tr>'+
+      '<td style="font-weight:600;border-left:3px solid '+color+'">'+esc(s.display_name)+'</td>'+
+      '<td style="font-family:Consolas,monospace">'+total+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+(wr>=50?'color:#0ecb81':'color:#f6465d')+'">'+wr.toFixed(1)+'%</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+pnlCls(closedPnl)+'">'+pnlSign(closedPnl)+'$'+Math.abs(closedPnl).toFixed(2)+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:600;'+pnlCls(openPnl)+'">'+pnlSign(openPnl)+'$'+Math.abs(openPnl).toFixed(2)+'</td>'+
+      '<td style="font-family:Consolas,monospace;font-weight:700;'+pnlCls(totalP)+'">'+pnlSign(totalP)+'$'+Math.abs(totalP).toFixed(2)+'</td>'+
+      '<td>'+btnText+'</td>'+
+    '</tr>';
+  }
+
+  html += '</tbody></table></div></div>';
+  return html;
+}
+
+function drawStrategyChart(sd) {
+  if (!sd || !sd.strategies) return;
+  const canvas = document.getElementById('strategyChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  const keys = STRATEGY_ORDER.filter(k => sd.strategies[k]);
+  const labels = keys.map(k => sd.strategies[k].display_name);
+  const closedData = keys.map(k => sd.strategies[k].total_pnl || 0);
+  const openData = keys.map(k => sd.strategies[k].is_open_pnl || 0);
+  const colors = keys.map(k => STRATEGY_COLORS[k] || '#8b949e');
+
+  if (strategyChart) {
+    strategyChart.data.labels = labels;
+    strategyChart.data.datasets[0].data = closedData;
+    strategyChart.data.datasets[1].data = openData;
+    strategyChart.data.datasets[0].backgroundColor = colors.map(c => c + 'CC');
+    strategyChart.data.datasets[1].backgroundColor = colors.map(c => c + '66');
+    strategyChart.update('none');
+    return;
+  }
+
+  strategyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '已实现盈亏',
+          data: closedData,
+          backgroundColor: colors.map(c => c + 'CC'),
+          borderColor: colors,
+          borderWidth: 1,
+        },
+        {
+          label: '浮动盈亏',
+          data: openData,
+          backgroundColor: colors.map(c => c + '44'),
+          borderColor: colors.map(c => c + 'AA'),
+          borderWidth: 1,
+          borderRadius: 2,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: {
+          display: true,
+          position: 'bottom',
+          labels: { color: '#8b949e', font: { size: 9 }, boxWidth: 10, padding: 8 }
+        },
+        tooltip: {
+          backgroundColor: '#1c2128', titleColor: '#8b949e', bodyColor: '#f0f6fc',
+          borderColor: '#30363d', borderWidth: 1, padding: 6,
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw >= 0 ? '+' : '') + '$' + Math.abs(ctx.raw).toFixed(2)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: '#21262d', drawBorder: false },
+          ticks: { color: '#8b949e', font: { size: 9 } }
+        },
+        y: {
+          grid: { color: '#21262d', drawBorder: false },
+          ticks: { color: '#484f58', font: { size: 9 }, callback: v => '$' + v.toFixed(0) }
+        }
+      }
+    }
+  });
+}
+
+async function toggleStrategy(strategyName, newState) {
+  try {
+    const r = await fetch('/api/strategy/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy: strategyName, enabled: newState }),
+    });
+    if (r.ok) {
+      const result = await r.json();
+      if (result.status === 'ok') {
+        console.log('[策略开关]', strategyName, '→', result.enabled ? '启用' : '暂停');
+        // 刷新策略数据
+        lastStrategiesData = await fetchStrategiesData();
+        refresh();
+      }
+    }
+  } catch(e) {
+    console.warn('[策略开关] 请求失败:', e.message);
+  }
+}
+
+/* =========== RENDER: FOOTER =========== */
+function renderFooter() {
+  return '<div class="footer">HighTempTation® · 每 '+FETCH_INTERVAL/1000+'s 刷新 · '+
+    '<a href="/api/status" style="color:#58a6ff;text-decoration:none">/api/status</a></div>';
+}
+
+/* =========== MAIN RENDER =========== */
+function renderDashboard(d) {
+  const sd = lastStrategiesData || { strategies: {}, toggles: {} };
+  const h = renderHeader(d) + renderStats(d) + renderChart(d) + renderStrategies(sd) + renderPositions(d) + renderClosed(d) + renderFooter();
+  document.getElementById('app').innerHTML = h;
+  drawChart(d);
+  drawStrategyChart(sd);
+
+  // 附加策略开关点击事件
+  const rows = document.querySelectorAll('#strategyTable tbody tr');
+  if (rows) {
+    const keys = [...STRATEGY_ORDER];
+    rows.forEach((row, idx) => {
+      const key = keys[idx];
+      if (!key || key === '_NEAR_SETTLEMENT') return;
+      const td = row.querySelector('td:last-child');
+      if (td) {
+        td.style.cursor = 'pointer';
+        td.title = '点击切换';
+        td.addEventListener('click', async function(e) {
+          e.stopPropagation();
+          const currentEnabled = lastStrategiesData && lastStrategiesData.toggles ? lastStrategiesData.toggles[key] : true;
+          await toggleStrategy(key, !currentEnabled);
+        });
+      }
+    });
+  }
+}
+
+async function refresh() {
+  const d = await fetchData();
+  lastRawData = d;
+  if (!d) {
+    document.getElementById('app').innerHTML =
+      '<div class="container"><div class="empty-state" style="padding:60px 20px">'+
+      '<div class="icon">⚠️</div><div class="text">无法获取数据</div></div></div>';
+    return;
+  }
+  // 同时获取策略数据
+  lastStrategiesData = await fetchStrategiesData();
+  document.getElementById('loading').style.display = 'none';
+  renderDashboard(d);
+  resetCountdown();
+}
+
+function resetCountdown() { countdownValue = FETCH_INTERVAL/1000; updateCountdown(); }
+function updateCountdown() {
+  const el=document.getElementById('countdown');
+  const bar=document.getElementById('refreshBarFill');
+  if (el) el.textContent=countdownValue+'s';
+  if (bar) bar.style.width=((FETCH_INTERVAL/1000-countdownValue)/(FETCH_INTERVAL/1000)*100)+'%';
+}
+function startCountdown() {
+  resetCountdown();
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer=setInterval(()=>{
+    countdownValue--;
+    if (countdownValue<=0) { countdownValue=FETCH_INTERVAL/1000; refresh(); }
+    updateCountdown();
+  },1000);
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{ refresh(); startCountdown(); });
+</script>
+</body>
+</html>
