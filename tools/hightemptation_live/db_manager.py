@@ -176,6 +176,80 @@ class TradeDB:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_ab_trade ON ab_trade_mapping(test_name, variant_name);
+
+        -- ── 高阶优化: 订单状态机 FSM 订单台账 ──
+        CREATE TABLE IF NOT EXISTS fsm_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_order_id TEXT NOT NULL UNIQUE,
+            token_id TEXT NOT NULL DEFAULT '',
+            symbol TEXT DEFAULT '',
+            side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+            qty REAL NOT NULL,
+            filled_qty REAL DEFAULT 0,
+            avg_fill_price REAL,
+            limit_price REAL,
+            state TEXT NOT NULL DEFAULT 'NEW',
+            source TEXT DEFAULT 'fsm',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_fsm_state ON fsm_orders(state);
+
+        -- ── 高阶优化: 微观结构快照 ──
+        CREATE TABLE IF NOT EXISTS microstructure_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            city TEXT,
+            token_id TEXT DEFAULT '',
+            mid_price REAL,
+            depth_bid REAL,
+            depth_ask REAL,
+            lob_shape TEXT,
+            depth_slope REAL,
+            impact_est REAL,
+            vpin REAL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ms_ts ON microstructure_snapshots(ts);
+
+        -- ── 高阶优化: 套利信号 ──
+        CREATE TABLE IF NOT EXISTS arbitrage_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            arb_type TEXT NOT NULL,
+            description TEXT,
+            expected_pnl REAL,
+            status TEXT DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_arb_ts ON arbitrage_signals(ts);
+
+        -- ── 高阶优化: ML 残差学习 ──
+        CREATE TABLE IF NOT EXISTS ml_residuals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER,
+            city TEXT,
+            date TEXT,
+            model_prob REAL,
+            residual REAL,
+            prediction REAL,
+            features_json TEXT DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ml_city ON ml_residuals(city, date);
+
+        -- ── 高阶优化: 混沌工程事件 ──
+        CREATE TABLE IF NOT EXISTS chaos_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts INTEGER NOT NULL,
+            scenario TEXT,
+            injected_fault TEXT,
+            circuit_state TEXT,
+            outcome TEXT,
+            detail TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_chaos_ts ON chaos_events(ts);
         """)
         self.conn.commit()
 
@@ -516,6 +590,132 @@ class TradeDB:
         except Exception as e:
             logger.error(f"记录 AB trade 失败: {e}")
             return False
+
+    # ── 高阶优化: FSM 订单台账 ──
+
+    def upsert_fsm_order(self, client_order_id: str, token_id: str = "",
+                          side: str = "buy", qty: float = 0.0,
+                          limit_price: Optional[float] = None,
+                          state: str = "NEW", source: str = "fsm") -> bool:
+        """写入或更新 FSM 订单台账（client_order_id 幂等）"""
+        try:
+            self.conn.execute("""
+                INSERT INTO fsm_orders(client_order_id, token_id, side, qty,
+                                       limit_price, state, source)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(client_order_id) DO UPDATE SET
+                    state=excluded.state,
+                    updated_at=datetime('now')
+            """, (client_order_id, token_id, side, qty, limit_price, state, source))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入 FSM 订单失败: {e}")
+            return False
+
+    def update_fsm_order_fill(self, client_order_id: str, filled_qty: float,
+                               avg_fill_price: float, state: str) -> bool:
+        """更新 FSM 订单成交状态"""
+        try:
+            self.conn.execute("""
+                UPDATE fsm_orders SET filled_qty=?, avg_fill_price=?, state=?,
+                       updated_at=datetime('now')
+                WHERE client_order_id=?
+            """, (filled_qty, avg_fill_price, state, client_order_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"更新 FSM 订单失败: {e}")
+            return False
+
+    def get_fsm_order(self, client_order_id: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM fsm_orders WHERE client_order_id=?",
+            (client_order_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_open_fsm_orders(self) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM fsm_orders WHERE state IN ('SUBMITTED','PARTIALLY_FILLED','UNKNOWN')"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── 高阶优化: 微观结构快照 ──
+
+    def store_microstructure_snapshot(self, ts: int, city: str, token_id: str,
+                                       mid_price: float, depth_bid: float,
+                                       depth_ask: float, lob_shape: str = "",
+                                       depth_slope: Optional[float] = None,
+                                       impact_est: Optional[float] = None,
+                                       vpin: Optional[float] = None) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO microstructure_snapshots
+                (ts, city, token_id, mid_price, depth_bid, depth_ask,
+                 lob_shape, depth_slope, impact_est, vpin)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+            """, (ts, city, token_id, mid_price, depth_bid, depth_ask,
+                   lob_shape, depth_slope, impact_est, vpin))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入微观结构快照失败: {e}")
+            return False
+
+    # ── 高阶优化: 套利信号 ──
+
+    def store_arbitrage_signal(self, ts: int, arb_type: str, description: str,
+                                expected_pnl: Optional[float] = None,
+                                status: str = "open") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO arbitrage_signals(ts, arb_type, description, expected_pnl, status)
+                VALUES(?,?,?,?,?)
+            """, (ts, arb_type, description, expected_pnl, status))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入套利信号失败: {e}")
+            return False
+
+    # ── 高阶优化: ML 残差学习 ──
+
+    def store_ml_residual(self, ts: Optional[int], city: str, date: str,
+                           model_prob: Optional[float], residual: float,
+                           prediction: Optional[float], features: dict) -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO ml_residuals(ts, city, date, model_prob, residual, prediction, features_json)
+                VALUES(?,?,?,?,?,?,?)
+            """, (ts, city, date, model_prob, residual, prediction,
+                   json.dumps(features, ensure_ascii=False)))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入 ML 残差失败: {e}")
+            return False
+
+    # ── 高阶优化: 混沌工程事件 ──
+
+    def store_chaos_event(self, ts: int, scenario: str, injected_fault: str,
+                           circuit_state: str, outcome: str, detail: str = "") -> bool:
+        try:
+            self.conn.execute("""
+                INSERT INTO chaos_events(ts, scenario, injected_fault, circuit_state, outcome, detail)
+                VALUES(?,?,?,?,?,?)
+            """, (ts, scenario, injected_fault, circuit_state, outcome, detail))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"写入混沌事件失败: {e}")
+            return False
+
+    def get_recent_chaos_events(self, limit: int = 50) -> List[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM chaos_events ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
         if self._conn:
