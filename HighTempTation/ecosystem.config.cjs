@@ -82,5 +82,33 @@ module.exports = {
                 PYTHONUNBUFFERED: '1',
             },
         },
+
+        // ═══════════════════════════════════════════════════════════════
+        // 5min Bot 子模块 (Benjam1nCup 整合: 套利/狙击/动量/阶梯)
+        // 独立运行入口 (调试/回测用)。
+        // 生产模式推荐: 由 hightemptation-bot 内部集成启动
+        // (PM5_ENABLED=true, 共享风控+统一账户+看板桥接),
+        // 不要与本进程同时运行, 避免重复交易同一账户。
+        // ═══════════════════════════════════════════════════════════════
+        {
+            name: 'polymarket-5min-standalone',
+            script: 'python3',
+            args: '-m polymarket_5min_bot',
+            cwd: PROJECT_ROOT,
+            interpreter: 'none',
+            exec_mode: 'fork',
+            instances: 1,
+            autorestart: true,
+            watch: false,
+            restart_delay: 10000,
+            max_restarts: 10,
+            exp_backoff_restart_delay: 100,
+            max_memory_restart: '400M',
+            env: {
+                DRY_RUN: 'true',
+                PYTHONUNBUFFERED: '1',
+                PM5_ENABLED: 'true',
+            },
+        },
     ],
 };

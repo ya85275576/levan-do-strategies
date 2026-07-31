@@ -42,6 +42,7 @@ logger = logging.getLogger("dashboard")
 
 API_URL = os.environ.get("API_URL", "http://localhost:3002/api/status")
 API_TRADES_URL = os.environ.get("API_TRADES_URL", "http://localhost:3002/api/trades")
+API_5MIN_URL = os.environ.get("API_5MIN_URL", "http://localhost:3002/api/5min")
 REFRESH_SEC = 30
 
 
@@ -72,6 +73,18 @@ def fetch_trades_data(limit: int = 100) -> dict:
     except Exception as e:
         logger.warning(f"交易历史API请求失败: {e}")
         return {}
+
+
+def fetch_5min_data() -> dict:
+    """从 /api/5min 获取 Benjam1nCup 5min Bot 子模块实时数据"""
+    try:
+        req = Request(API_5MIN_URL, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        return data
+    except Exception as e:
+        logger.warning(f"5min API 请求失败: {e}")
+        return {"adapter": False, "error": str(e)}
 
 
 def load_data() -> dict:
@@ -327,6 +340,135 @@ def render_historical_trades():
 
 
 # ════════════════════════════════════════════════════════════════
+# 5min Bot 子模块看板 (Benjam1nCup 整合: 套利/狙击/动量/阶梯)
+# ════════════════════════════════════════════════════════════════
+
+def render_5min_dashboard():
+    """5min Bot 子模块标签页: 指标 + 持仓 + 信号 + 共享风控/账户"""
+    data = fetch_5min_data()
+    if not data.get("adapter"):
+        st.info("⚡ 5min Bot 子模块未启动 (PM5_ENABLED=false 或 API 不可用)")
+        if data.get("error"):
+            st.caption(f"错误: {data['error']}")
+        return
+
+    dry_run = data.get("dry_run", True)
+    st.markdown(f"#### ⚡ 5分钟加密 Up/Down 套利子模块"
+                f" <span style='color:{"#2ea043" if dry_run else "#d29922"}'>"
+                f"DRY_RUN={dry_run}</span>", unsafe_allow_html=True)
+
+    stats = data.get("stats", {})
+    signal_counts = data.get("signal_counts", {})
+    account = data.get("account", {})
+    risk = data.get("shared_risk", {})
+
+    # ── 指标行 ──
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        render_metric_card("扫描次数", str(stats.get("scan_count", 0)))
+    with c2:
+        render_metric_card("信号/成交",
+                           f"{stats.get('signals', 0)}/{stats.get('executed', 0)}")
+    with c3:
+        render_metric_card("已结算", str(stats.get("settled", 0)),
+                           delta=f"胜{stats.get('wins',0)} 负{stats.get('losses',0)}")
+    with c4:
+        render_metric_card("账户余额", f"${account.get('balance', 0):.0f}",
+                           delta=f"占用 ${account.get('committed', 0):.0f}")
+    with c5:
+        dlb = "🔴 熔断" if risk.get("daily_loss_breaked") else "🟢 正常"
+        render_metric_card("共享日亏损", f"${risk.get('daily_pnl', 0):+.0f}",
+                           delta=dlb)
+
+    # ── 策略触发分布 ──
+    if signal_counts:
+        st.subheader("🎯 策略触发分布")
+        dfc = pd.DataFrame([{"策略": k, "信号数": v}
+                            for k, v in sorted(signal_counts.items())])
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            st.dataframe(dfc, use_container_width=True, height=200)
+        with c2:
+            try:
+                fig = go.Figure(go.Bar(
+                    x=dfc["策略"], y=dfc["信号数"],
+                    marker_color="#58a6ff", opacity=0.8))
+                fig.update_layout(title="5min 策略信号分布",
+                                  template="plotly_dark", height=200,
+                                  margin=dict(l=40, r=20, t=40, b=40))
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                pass
+
+    # ── 当前持仓 ──
+    st.subheader("📋 5min 持仓")
+    positions = data.get("open_positions", [])
+    if not positions:
+        st.info("🟢 无 5min 持仓")
+    else:
+        dfp = pd.DataFrame([{
+            "市场": p.get("market_id"), "资产": p.get("asset"),
+            "方向": p.get("side"), "入场价": p.get("entry_price"),
+            "股数": p.get("shares"), "金额$": p.get("size_usd"),
+            "策略": p.get("strategy"), "剩余s": p.get("seconds_left"),
+        } for p in positions])
+        st.dataframe(dfp, use_container_width=True, height=250)
+
+    # ── 活跃市场 ──
+    st.subheader("📡 活跃 5min 市场")
+    markets = data.get("active_markets", [])[:10]
+    if not markets:
+        st.info("无活跃市场 (真实市场空缺, 用模拟市场回退)")
+    else:
+        dfm = pd.DataFrame([{
+            "事件": m.get("event_id"), "资产": m.get("asset"),
+            "剩余s": m.get("seconds_left"), "模拟": m.get("simulated"),
+        } for m in markets])
+        st.dataframe(dfm, use_container_width=True, height=200)
+
+    # ── 最近信号 ──
+    st.subheader("📶 最近信号/订单")
+    signals = data.get("recent_signals", [])[-15:]
+    if not signals:
+        st.info("暂无信号记录")
+    else:
+        dfs = pd.DataFrame([{
+            "策略": s.get("strategy"), "资产": s.get("asset"),
+            "方向": s.get("side"), "价格": s.get("price"),
+            "金额$": s.get("size_usd"), "状态": s.get("status"),
+            "原因": s.get("reason"),
+        } for s in signals])
+        st.dataframe(dfs, use_container_width=True, height=280)
+
+    # ── 共享风控 + 账户 (两 Bot 共用) ──
+    st.subheader("🛡️ 共享风控 / 统一账户 (与天气 Bot 共用)")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**共享风控 SharedRiskGate**")
+        st.json({
+            "日亏损上限": f"${risk.get('daily_loss_limit', 0):.0f}",
+            "今日盈亏": f"${risk.get('daily_pnl', 0):+.0f}",
+            "总持仓": f"{risk.get('open_count', 0)}/{risk.get('max_concurrent', 0)}",
+            "连续亏损": risk.get("consecutive_losses", 0),
+            "熔断": risk.get("circuit_reason") or "无",
+            "放行/拒绝": f"{risk.get('n_allowed', 0)}/{risk.get('n_rejected', 0)}",
+        })
+    with c2:
+        st.markdown("**统一账户 AccountManager**")
+        st.json({
+            "初始资金": f"${account.get('initial_capital', 0):.0f}",
+            "余额": f"${account.get('balance', 0):.0f}",
+            "在途占用": f"${account.get('committed', 0):.0f}",
+            "可用": f"${account.get('available', 0):.0f}",
+            "nonce": account.get("nonce", 0),
+            "订单 总/成/拒": "{}/{}/{}".format(
+                account.get("stats", {}).get("orders_total", 0),
+                account.get("stats", {}).get("orders_filled", 0),
+                account.get("stats", {}).get("orders_rejected", 0)),
+        })
+
+
+# ════════════════════════════════════════════════════════════════
 # Streamlit 主界面
 # ════════════════════════════════════════════════════════════════
 
@@ -355,60 +497,70 @@ def main():
     """, unsafe_allow_html=True)
 
     st.title("🌤️ HighTempTation 实时看板")
-    st.caption(f"数据源: {API_URL}  (来自天气 Bot 实时内存)")
+    st.caption(f"数据源: {API_URL}  (来自天气 Bot 实时内存) | "
+               f"5min 子模块: {API_5MIN_URL}")
 
     # 自动刷新
     last_refresh = st.empty()
-    placeholder = st.empty()
 
-    with placeholder.container():
-        data = load_data()
+    # ═══════════════════════════════════════════════════════════
+    # 标签页: 天气主看板 + 5min 子模块看板 (Benjam1nCup 整合)
+    # ═══════════════════════════════════════════════════════════
+    tab_weather, tab_5min = st.tabs(["🌤️ 天气套利", "⚡ 5分钟套利 (Benjam1nCup)"])
 
-        # 时间
-        last_refresh.caption(
-            f"最后刷新: {data['current_time']}  (每 {REFRESH_SEC}s 自动)"
-            + (f"  ⚠️ {data.get('error', '')}" if data.get('error') else "")
-        )
+    with tab_weather:
+        placeholder = st.empty()
+        with placeholder.container():
+            data = load_data()
 
-        # ── 指标行 ──
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            pnl = data["daily_pnl"]
-            render_metric_card("今日 P&L", f"${pnl:+.2f}",
-                               delta=f"{'🟢' if pnl>=0 else '🔴'} {pnl:+.2f}")
-        with col2:
-            render_metric_card("总交易", str(data["daily_trades"]))
-        with col3:
-            wr = data["daily_win_rate"]
-            render_metric_card("胜率", f"{wr:.1f}%",
-                               delta=f"{data['daily_wins']}胜 / {data['daily_losses']}负")
-        with col4:
-            oc = data.get("open_count", len(data["open_positions"]))
-            render_metric_card("持仓", str(oc),
-                               delta=f"资金: ${data.get('capital', 0):.0f}")
-        with col5:
-            render_metric_card("累计交易", str(data["total_trades"]))
+            # 时间
+            last_refresh.caption(
+                f"最后刷新: {data['current_time']}  (每 {REFRESH_SEC}s 自动)"
+                + (f"  ⚠️ {data.get('error', '')}" if data.get('error') else "")
+            )
 
-        # ── 图表行 ──
-        col1, col2 = st.columns(2)
-        with col1:
-            render_equity_chart(data["equity_curve"])
-        with col2:
-            render_calibration_chart(data["calibration"])
+            # ── 指标行 ──
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                pnl = data["daily_pnl"]
+                render_metric_card("今日 P&L", f"${pnl:+.2f}",
+                                   delta=f"{'🟢' if pnl>=0 else '🔴'} {pnl:+.2f}")
+            with col2:
+                render_metric_card("总交易", str(data["daily_trades"]))
+            with col3:
+                wr = data["daily_win_rate"]
+                render_metric_card("胜率", f"{wr:.1f}%",
+                                   delta=f"{data['daily_wins']}胜 / {data['daily_losses']}负")
+            with col4:
+                oc = data.get("open_count", len(data["open_positions"]))
+                render_metric_card("持仓", str(oc),
+                                   delta=f"资金: ${data.get('capital', 0):.0f}")
+            with col5:
+                render_metric_card("累计交易", str(data["total_trades"]))
 
-        # ── 持仓 + 平仓 ──
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("📋 当前持仓")
-            render_positions(data["open_positions"])
-        with col2:
-            st.subheader("📜 最近平仓")
-            render_closed_trades(data["closed_trades"])
+            # ── 图表行 ──
+            col1, col2 = st.columns(2)
+            with col1:
+                render_equity_chart(data["equity_curve"])
+            with col2:
+                render_calibration_chart(data["calibration"])
 
-        # ── 历史交易记录 (来自 TradeDB) ──
-        st.divider()
-        st.header("📚 历史交易记录 (TradeDB 持久化)")
-        render_historical_trades()
+            # ── 持仓 + 平仓 ──
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("📋 当前持仓")
+                render_positions(data["open_positions"])
+            with col2:
+                st.subheader("📜 最近平仓")
+                render_closed_trades(data["closed_trades"])
+
+            # ── 历史交易记录 (来自 TradeDB) ──
+            st.divider()
+            st.header("📚 历史交易记录 (TradeDB 持久化)")
+            render_historical_trades()
+
+    with tab_5min:
+        render_5min_dashboard()
 
     # 自动刷新
     _time.sleep(REFRESH_SEC)
