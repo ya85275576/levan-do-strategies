@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-07-30T00:00:00Z",
+  "lookback_days": 30,
+  "strategies": {
+    "ladder": {
+      "label": "🪜 温度阶梯",
+      "total": 0, "wins": 0, "losses": 0,
+      "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+      "sharpe": 0, "max_drawdown": 0,
+      "pnl_series": [], "score": 0, "weight": 0
+    },
+    "extreme_coldmath": {
+      "label": "❄️ 极端低估",
+      "total": 0, "wins": 0, "losses": 0,
+      "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+      "sharpe": 0, "max_drawdown": 0,
+      "pnl_series": [], "score": 0, "weight": 0
+    },
+    "near_lock": {
+      "label": "🔒 近结算锁利",
+      "total": 0, "wins": 0, "losses": 0,
+      "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+      "sharpe": 0, "max_drawdown": 0,
+      "pnl_series": [], "score": 0, "weight": 0
+    },
+    "model_edge": {
+      "label": "📐 模型边缘",
+      "total": 0, "wins": 0, "losses": 0,
+      "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+      "sharpe": 0, "max_drawdown": 0,
+      "pnl_series": [], "score": 0, "weight": 0
+    },
+    "hko_confirm": {
+      "label": "🏛️ 天文台确认",
+      "total": 0, "wins": 0, "losses": 0,
+      "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+      "sharpe": 0, "max_drawdown": 0,
+      "pnl_series": [], "score": 0, "weight": 0
+    }
+  },
+  "summary": {
+    "total_trades": 0,
+    "total_pnl": 0,
+    "overall_win_rate": 0,
+    "active_strategies": 0
+  }
+}

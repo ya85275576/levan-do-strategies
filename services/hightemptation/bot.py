@@ -1178,7 +1178,7 @@ class Position:
                  "pnl", "pct", "is_open", "exit_reason",
                  "exit_time", "realized", "_settled",
                  "peak_no", "entry_time", "_db_id",
-                 "_p_model", "_signal_type")
+                 "_p_model", "_signal_type", "_strategy")
 
     def __init__(self, market_id: str, city: str, date_: str, label: str,
                  entry_no: float, size: float, end_date: str = "",
@@ -1202,6 +1202,7 @@ class Position:
         self.peak_no = entry_no
         self.entry_time = datetime.now(timezone.utc).isoformat()
         self._db_id = None
+        self._strategy = "model_edge"
 
     def update(self, no_price: float):
         self.curr_no = no_price
@@ -1431,9 +1432,9 @@ class Engine:
 
     def record_signal_history(self, position: Position, signal_type: str = "MODEL"):
         """
-        结算后将信号记录写入 signal_history 表。
+        结算后将信号记录写入 signal_history 表，包含策略标签。
 
-        字段: city, bucket_label, signal_type, p_model, entry_price,
+        字段: city, bucket_label, signal_type, strategy, p_model, entry_price,
               exit_price, expected_result, actual_result, pnl
         """
         if not cfg.SIGNAL_HISTORY_ENABLED or not self.db:
@@ -1441,11 +1442,9 @@ class Engine:
         if not position._settled:
             return
         try:
-            # 计算预期结果: 若结算后 direction 正确则 expected=1
             expected_result = 1 if position.realized > 0 else 0
-            actual_result = expected_result  # 对于已结算仓位，expected == actual
+            actual_result = expected_result
 
-            # 从分析记录中找 p_model (如果没有则用 entry_price 近似)
             p_model = None
             try:
                 if hasattr(position, '_p_model'):
@@ -1453,16 +1452,19 @@ class Engine:
             except Exception:
                 pass
 
+            strategy = getattr(position, '_strategy', 'model_edge')
+
             self.db.conn.execute("""
                 INSERT INTO signal_history
-                (city, bucket_label, signal_type, p_model, p_market,
+                (city, bucket_label, signal_type, strategy, p_model, p_market,
                  entry_price, exit_price, expected_result, actual_result,
                  pnl, side, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """, (
                 position.city,
                 position.bucket_label,
                 signal_type,
+                strategy,
                 p_model,
                 position.entry_no,
                 position.entry_no,
@@ -1474,14 +1476,39 @@ class Engine:
             ))
             self.db.conn.commit()
             logger.debug(f"  📝 信号历史已记录 [{position.city}] [{position.bucket_label}] "
-                        f"type={signal_type} result={'WIN' if actual_result else 'LOSS'} "
+                        f"type={signal_type} strategy={strategy} "
+                        f"result={'WIN' if actual_result else 'LOSS'} "
                         f"pnl=${position.realized:.2f}")
         except Exception as e:
             logger.warning(f"记录信号历史失败: {e}")
 
+    @staticmethod
+    def classify_strategy(signal_type: str, is_ladder: bool,
+                          is_extreme: bool = False,
+                          is_near_lock: bool = False,
+                          city: str = "") -> str:
+        """
+        将信号类型映射为策略归因标签：
+          - ladder: 温度阶梯衍生信号
+          - extreme_coldmath: METAR 极端低估 + 赔率密集计算
+          - near_lock: 接近结算的锁利信号
+          - model_edge: 标准模型边缘套利
+          - hko_confirm: 香港天文台数据确认的保守信号
+        """
+        if is_ladder:
+            return "ladder"
+        if is_extreme:
+            return "extreme_coldmath"
+        if is_near_lock:
+            return "near_lock"
+        if city.lower() in ("hong kong",):
+            return "hko_confirm"
+        return "model_edge"
+
     def open_position(self, mid: str, city: str, dt: str, label: str,
                       entry_no: float, size: float, end_date: str = "",
-                      side: str = "NO", signal_type: str = "MODEL"):
+                      side: str = "NO", signal_type: str = "MODEL",
+                      strategy: Optional[str] = None):
         # Bug 1: 已在持倉或已平倉 → 拒開
         if self.has_position(mid):
             logger.warning(f"  ⛔ 防重複: {city} {label} (market_id 已存在)")
@@ -1498,19 +1525,26 @@ class Engine:
         p = Position(mid, city, dt, label, entry_no, size, end_date, side)
         p._p_model = None  # will be set by caller if available
         p._signal_type = signal_type
+        # ── 策略归因标签 ──
+        if strategy is None:
+            is_ladder = False
+            is_extreme = (signal_type == "METAR")
+            is_near_lock = False
+            strategy = Engine.classify_strategy(signal_type, is_ladder, is_extreme, is_near_lock, city)
+        p._strategy = strategy
         self.positions.append(p)
         self.total += 1
         self.capital -= size
         self.capital_history.append((datetime.now(timezone.utc).isoformat(), self.capital))
         side_icon = "🔵" if side == "YES" else "📦"
         logger.info(f"{side_icon} 開倉 [{city} {label}] {side}@{entry_no:.4f} ${size:.0f} "
-                    f"type={signal_type}")
+                    f"type={signal_type} strategy={strategy}")
         # ── 持久化到 TradeDB ──
         self._persist_open(p)
         return p
 
     def _persist_open(self, p: Position):
-        """将开仓记录写入 TradeDB"""
+        """将开仓记录写入 TradeDB，包含策略标签"""
         if not self.db:
             return
         try:
@@ -1519,6 +1553,7 @@ class Engine:
                 if lbl == p.bucket_label:
                     bucket_lower, bucket_upper = lo, hi
                     break
+            strategy = getattr(p, '_strategy', 'model_edge')
             trade_id = self.db.open_trade(
                 token_id=p.market_id,
                 city=p.city,
@@ -1527,6 +1562,7 @@ class Engine:
                 side=p.side,
                 entry_price=p.entry_no,
                 size=p.size,
+                strategy=strategy,
             )
             if trade_id is not None:
                 p._db_id = trade_id
@@ -1761,8 +1797,9 @@ class Engine:
         self._persist_close(p)
         # ── 记录信号历史 (self-learning loop) ──
         signal_type = getattr(p, '_signal_type', 'MODEL')
+        strategy = getattr(p, '_strategy', 'model_edge')
+        logger.info(f"  ✅ 平倉 [{p.city} {p.bucket_label}] strategy={strategy} P&L=${pnl:.2f} | {p.exit_reason}")
         self.record_signal_history(p, signal_type)
-        logger.info(f"  ✅ 平倉 [{p.city} {p.bucket_label}] P&L=${pnl:.2f} | {p.exit_reason}")
 
     # ── v7: 自适应宽度 ──
     @staticmethod
@@ -2910,11 +2947,27 @@ async def main():
                         continue
 
                     sig_type = sig.get("signal_type", "MODEL")
+                    # 计算策略归因标签
+                    is_extreme = (sig_type == "METAR")
+                    is_ladder_sig = sig.get("is_ladder", False)
+                    # near_lock: 距结算 < 24h 且 diff 足够
+                    is_near_lock = False
+                    end_date_str = sig.get("end_date", "")
+                    if end_date_str:
+                        try:
+                            ed = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                            hours_left = (ed - datetime.now(timezone.utc)).total_seconds() / 3600
+                            if hours_left < 24 and hours_left > 0 and abs(sig.get("diff", 0)) > 0.05:
+                                is_near_lock = True
+                        except:
+                            pass
+                    strategy = Engine.classify_strategy(
+                        sig_type, is_ladder_sig, is_extreme, is_near_lock, sig["city"])
                     pos = _engine.open_position(
                         sig["market_id"], sig["city"], sig["date"],
                         sig["bucket"], sig["entry_price"], size,
                         sig.get("end_date", ""), sig.get("side", "NO"),
-                        signal_type=sig_type)
+                        signal_type=sig_type, strategy=strategy)
                     if pos is not None:
                         if is_ladder:
                             ladder_opened += 1

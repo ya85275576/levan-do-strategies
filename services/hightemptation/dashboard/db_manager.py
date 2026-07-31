@@ -98,6 +98,7 @@ class TradeDB:
             exit_time TEXT,
             exit_reason TEXT DEFAULT '',
             status TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled')),
+            strategy TEXT DEFAULT 'model_edge',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_market_ts ON market_prices(ts);
@@ -122,6 +123,7 @@ class TradeDB:
             city TEXT NOT NULL,
             bucket_label TEXT,
             signal_type TEXT NOT NULL DEFAULT 'MODEL',
+            strategy TEXT DEFAULT 'model_edge',
             p_model REAL,
             p_market REAL,
             entry_price REAL,
@@ -135,7 +137,18 @@ class TradeDB:
         CREATE INDEX IF NOT EXISTS idx_signal_city ON signal_history(city);
         CREATE INDEX IF NOT EXISTS idx_signal_type ON signal_history(signal_type);
         CREATE INDEX IF NOT EXISTS idx_signal_created ON signal_history(created_at);
+        CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
+        CREATE INDEX IF NOT EXISTS idx_signal_strategy ON signal_history(strategy);
         """)
+        # ── 迁移：为旧表添加 strategy 列（幂等） ──
+        try:
+            c.execute("ALTER TABLE trades ADD COLUMN strategy TEXT DEFAULT 'model_edge'")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+        try:
+            c.execute("ALTER TABLE signal_history ADD COLUMN strategy TEXT DEFAULT 'model_edge'")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     # ── 写入 ──
@@ -186,13 +199,13 @@ class TradeDB:
 
     def open_trade(self, token_id: str, city: str, bucket_lower: float,
                    bucket_upper: float, side: str, entry_price: float,
-                   size: float) -> Optional[int]:
+                   size: float, strategy: str = "model_edge") -> Optional[int]:
         try:
             cur = self.conn.execute(
                 "INSERT INTO trades(token_id, city, bucket_lower, bucket_upper, "
-                "side, entry_price, size, entry_time, status) "
-                "VALUES(?,?,?,?,?,?,?,datetime('now'),'open')",
-                (token_id, city, bucket_lower, bucket_upper, side, entry_price, size),
+                "side, entry_price, size, strategy, entry_time, status) "
+                "VALUES(?,?,?,?,?,?,?,?,datetime('now'),'open')",
+                (token_id, city, bucket_lower, bucket_upper, side, entry_price, size, strategy),
             )
             self.conn.commit()
             return cur.lastrowid
@@ -411,6 +424,111 @@ class TradeDB:
                 "win_rate": round(wins / total, 4) if total > 0 else 0,
                 "avg_pnl": round(r["avg_pnl"] or 0, 2),
                 "total_pnl": round(r["total_pnl"] or 0, 2),
+            }
+        return result
+
+    def record_signal_with_strategy(self, city: str, bucket_label: str,
+                                       signal_type: str, strategy: str,
+                                       p_model: float, p_market: float,
+                                       entry_price: float, exit_price: float,
+                                       expected_result: int, actual_result: int,
+                                       pnl: float, side: str = 'NO') -> bool:
+        """记录带策略标签的信号历史"""
+        try:
+            self.conn.execute("""
+                INSERT INTO signal_history
+                (city, bucket_label, signal_type, strategy, p_model, p_market,
+                 entry_price, exit_price, expected_result, actual_result,
+                 pnl, side, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """, (city, bucket_label, signal_type, strategy, p_model, p_market,
+                   entry_price, exit_price, expected_result, actual_result,
+                   round(pnl, 2), side))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"记录策略信号失败: {e}")
+            return False
+
+    def get_strategy_attribution(self, days: int = 30) -> dict:
+        """
+        返回各策略的归因统计数据（按分组统计、夏普、回撤）。
+
+        Returns:
+            dict[strategy_name] = {
+                total, wins, losses, win_rate,
+                total_pnl, avg_pnl, sharpe, max_drawdown, pnl_series
+            }
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days))
+        rows = self.conn.execute("""
+            SELECT strategy, COUNT(*) as total,
+                   SUM(CASE WHEN actual_result=1 THEN 1 ELSE 0 END) as wins,
+                   SUM(CASE WHEN actual_result=0 THEN 1 ELSE 0 END) as losses,
+                   COALESCE(SUM(pnl),0) as total_pnl,
+                   COALESCE(AVG(pnl),0) as avg_pnl
+            FROM signal_history
+            WHERE strategy IS NOT NULL
+              AND actual_result IS NOT NULL
+              AND created_at >= ?
+            GROUP BY strategy
+            ORDER BY total_pnl DESC
+        """, (cutoff.isoformat(),)).fetchall()
+
+        result = {}
+        for r in rows:
+            st = r["strategy"] or "model_edge"
+            total = r["total"]
+            wins = r["wins"] or 0
+            losses = r["losses"] or 0
+            total_pnl = r["total_pnl"] or 0
+            avg_pnl = r["avg_pnl"] or 0
+            win_rate = round(wins / total, 4) if total > 0 else 0
+
+            # 获取每个策略的每日 PnL 序列（用于夏普和回撤计算）
+            pnl_rows = self.conn.execute("""
+                SELECT pnl, created_at FROM signal_history
+                WHERE strategy=?
+                  AND actual_result IS NOT NULL
+                  AND created_at >= ?
+                ORDER BY created_at ASC
+            """, (st, cutoff.isoformat())).fetchall()
+
+            pnl_series = [float(row["pnl"]) for row in pnl_rows if row["pnl"] is not None]
+
+            # 夏普比率 Sharpe = (mean(PnL) / std(PnL)) * sqrt(N)
+            sharpe = 0.0
+            if len(pnl_series) >= 3:
+                mean_pnl = sum(pnl_series) / len(pnl_series)
+                var_pnl = sum((p - mean_pnl) ** 2 for p in pnl_series) / len(pnl_series)
+                if var_pnl > 0:
+                    daily_sharpe = mean_pnl / (var_pnl ** 0.5)
+                    sharpe = round(daily_sharpe * (365 ** 0.5), 2)  # 年化
+
+            # 最大回撤: 累计 PnL 曲线
+            md = 0.0
+            if pnl_series:
+                cum = 0.0
+                peak = 0.0
+                for p in pnl_series:
+                    cum += p
+                    if cum > peak:
+                        peak = cum
+                    dd = peak - cum
+                    if dd > md:
+                        md = dd
+
+            result[st] = {
+                "total": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "total_pnl": round(total_pnl, 2),
+                "avg_pnl": round(avg_pnl, 2),
+                "sharpe": sharpe,
+                "max_drawdown": round(abs(md), 2),
+                "pnl_series": [round(p, 2) for p in pnl_series[-60:]],  # 最多60笔
+                "weight": 0.0,  # 由优化器计算
             }
         return result
 
