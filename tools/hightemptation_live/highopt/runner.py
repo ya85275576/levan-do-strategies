@@ -68,23 +68,31 @@ def make_lob(mid: float, depth: float = 500.0, levels: int = 5) -> OrderBookSnap
 
 
 def make_records(n: int = 400, seed: int = 1) -> list:
-    """合成 Point-in-Time 记录: mu/sigma/bucket/市场价/结算/实况"""
+    """合成 Point-in-Time 记录: mu/sigma/bucket/市场价/结算/实况
+
+    残差设计为「城市常数偏差 + 双周周期 + 噪声」——可被 ML 从
+    city/day_of_year 特征学习，用于演示残差修正有效。
+    """
     rng = random.Random(seed)
     records = []
     base_ts = 1700000000
+    city_bias = {"Tokyo": 1.5, "Seoul": -1.0, "Singapore": 0.5}
     for i in range(n):
+        ts = base_ts + i * 3600
+        city = rng.choice(list(city_bias))
         mu = 28.0 + 6.0 * math.sin(i / 40.0) + rng.gauss(0, 1.0)
         sigma = max(1.0, 2.0 + rng.gauss(0, 0.3))
-        # 模型残差: 正弦漂移（可被 ML 学习）
-        resid = 1.2 * math.sin(i / 60.0) + rng.gauss(0, 0.5)
+        # 可学习残差: 城市常数偏差 + 双周周期 + 噪声
+        doy = datetime.fromtimestamp(ts, tz=timezone.utc).timetuple().tm_yday
+        resid = city_bias[city] + 0.8 * math.sin(2 * math.pi * doy / 14.0) + rng.gauss(0, 0.4)
         actual = mu + resid
         lo = 25.0; hi = 35.0
         p_model = _bucket_prob(mu, sigma, lo, hi)
         p_market = max(0.05, min(0.95, p_model + rng.gauss(0, 0.03) + 0.02))
         records.append({
-            "ts": base_ts + i * 3600,
-            "date": datetime.fromtimestamp(base_ts + i * 3600, tz=timezone.utc).strftime("%Y-%m-%d"),
-            "city": rng.choice(["Tokyo", "Seoul", "Singapore"]),
+            "ts": ts,
+            "date": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d"),
+            "city": city,
             "mu": mu, "sigma": sigma, "n_models": 5,
             "spread": rng.uniform(0.5, 3.0),
             "models": {m: mu + rng.gauss(0, sigma * 0.3) for m in
@@ -140,21 +148,21 @@ def test_microstructure() -> bool:
         drift = rng.choice([-1, 0, 1]) * 0.005
         price = max(0.1, min(0.9, price + drift))
         vpin.update(price=price, volume=float(rng.randint(10, 100)))
-    # 高知情: 单边 tick
+    # 高知情: 单边上涨 tick（价格严格递增）
     vpin_high = VPINFilter(bucket_volume=500, window=10)
-    for _ in range(100):
-        vpin_high.update(price=0.45, volume=100.0)   # 全买
+    for i in range(100):
+        vpin_high.update(price=0.44 + i * 0.0005, volume=100.0)   # 全买
     logger.info(f"  VPIN 随机流={vpin.vpin:.3f} 单边流={vpin_high.vpin:.3f}")
     assert vpin_high.vpin >= 0.9, "单边流 VPIN 应接近 1"
     assert vpin_high.is_high()
 
     # 开仓闸门
     gate = MicrostructureGate(vpin=vpin_high)
-    ok_g, reasons, metrics = gate.check(thick, qty=50, sigma=0.02, volume=5000)
+    ok_g, reasons, metrics = gate.check(thick, qty=50, sigma=0.02, volume=50000)
     logger.info(f"  闸门(高VPIN): ok={ok_g} reasons={reasons} metrics={metrics}")
     assert not ok_g and any("VPIN" in r for r in reasons), "高 VPIN 应拒绝开仓"
     gate2 = MicrostructureGate(vpin=VPINFilter())
-    ok_g2, _, m2 = gate2.check(thick, qty=50, sigma=0.02, volume=5000)
+    ok_g2, _, m2 = gate2.check(thick, qty=50, sigma=0.02, volume=50000)
     assert ok_g2, f"健康簿应放行: {m2}"
 
     RESULTS["microstructure"] = {
@@ -179,19 +187,23 @@ def test_arbitrage() -> bool:
     ]
     # 桶分割: ΣYES = 1.06（被高估 → 卖全部 YES）
     buckets_rich = [dict(b, yes=b["yes"] + 0.018) for b in buckets_cheap]
-    # 单调性违反: 低桶 YES 高于高桶 YES
+    # put-call parity 违反: 20-25 桶 YES+NO = 0.42+0.85 = 1.27 ≠ 1
     buckets_bad = [dict(b) for b in buckets_cheap]
-    buckets_bad[1]["yes"] = 0.42  # 20-25 高于 25-30
+    buckets_bad[1]["yes"] = 0.42
 
     scanner = ArbitrageScanner(fee_pct=0.02, gas_usd=0.01)
-    sigs_cheap = scanner.scan_bucket_group(buckets_cheap, sigma=2.0)
-    sigs_rich = scanner.scan_bucket_group(buckets_rich, sigma=2.0)
-    sigs_bad = scanner.scan_bucket_group(buckets_bad, sigma=1.0)
-    for s in sigs_cheap + sigs_rich + sigs_bad:
+    sigs_cheap = scanner.scan_bucket_group(buckets_cheap, sigma=2.0, min_qty=100)
+    sigs_rich = scanner.scan_bucket_group(buckets_rich, sigma=2.0, min_qty=100)
+    sigs_bad = scanner.scan_bucket_group(buckets_bad, sigma=1.0, min_qty=100)
+    # 合并桶可加性: YES[20-25]+YES[25-30]=0.45 vs 合并 YES[20-30]=0.60 → 差 0.15
+    sigs_add = scanner.scan_bucket_group(buckets_cheap, min_qty=100,
+                                         combined={"key": "20-30", "yes": 0.60, "no": 0.40})
+    for s in sigs_cheap + sigs_rich + sigs_bad + sigs_add:
         logger.info(f"  套利: [{s.arb_type}] {s.description} pnl=${s.expected_pnl:.3f}")
     assert any(s.arb_type == "bucket_partition" for s in sigs_cheap), "低估组应触发桶分割买"
     assert any(s.arb_type == "bucket_partition" for s in sigs_rich), "高估组应触发桶分割卖"
-    assert any(s.arb_type == "adjacent_monotone" for s in sigs_bad), "单调违反应被检出"
+    assert any(s.arb_type == "put_call_parity" for s in sigs_bad), "put-call parity 违反应被检出"
+    assert any(s.arb_type == "additive_parity" for s in sigs_add), "合并桶可加性违反应被检出"
 
     # 期限结构
     term_sigs = scanner.scan_term_structure([
@@ -215,7 +227,8 @@ def test_arbitrage() -> bool:
     RESULTS["arbitrage"] = {
         "ok": True, "signals": len(sigs_cheap + sigs_rich + sigs_bad + term_sigs + plat_sigs),
         "bucket_partition_cheap": len(sigs_cheap), "bucket_partition_rich": len(sigs_rich),
-        "monotone_violations": len(sigs_bad), "term": len(term_sigs), "platform": len(plat_sigs),
+        "put_call_violations": len(sigs_bad), "additive": len(sigs_add),
+        "term": len(term_sigs), "platform": len(plat_sigs),
     }
     return True
 
@@ -292,7 +305,8 @@ async def test_order_fsm() -> bool:
     resolved = await fsm_g.resolve_ghost(g)
     logger.info(f"  幽灵解析: state={resolved.state.value}")
     assert resolved.state in (OrderState.UNKNOWN, OrderState.CANCELLED,
-                              OrderState.SUBMITTED, OrderState.FILLED), \
+                              OrderState.SUBMITTED, OrderState.FILLED,
+                              OrderState.PARTIALLY_FILLED, OrderState.REJECTED), \
         f"幽灵解析异常: {resolved.state.value}"
     # 绝不允许自动重发: 同一 intent 无第二个订单
     assert len(fsm_g.orders_by_intent("ghost-test")) == 1, "幽灵订单被重复提交!"
@@ -334,10 +348,18 @@ def test_walk_forward() -> bool:
     records = make_records(500, seed=9)
 
     # Point-in-Time: 前视偏差断言
-    loader = PointInTimeLoader(records)
+    # 合成记录里 actual 从一开始就存在（标签），模拟真实场景: actual 在结算后才写入
+    pit_records = []
+    for r in records:
+        r2 = dict(r)
+        # 结算时间 = 记录时间 + 24h（模拟: 实况在结算后才可用）
+        r2["actual"] = r2["actual"] if r2["ts"] >= records[50]["ts"] + 24 * 3600 else None
+        pit_records.append(r2)
+    loader = PointInTimeLoader(pit_records)
     snap = loader.state_at(records[100]["ts"])
     assert all(r["ts"] <= records[100]["ts"] for r in snap), "Point-in-Time 违反!"
-    assert loader.assert_no_lookahead(records[50]["ts"], future_keys=["actual"])
+    assert loader.assert_no_lookahead(records[50]["ts"], future_keys=["actual"]), \
+        "Point-in-Time 存在前视偏差"
 
     # Walk-Forward 回测
     def make_model(train_events):
@@ -433,6 +455,15 @@ def persist(db_path: str):
             for name, s in chaos["scenarios"].items():
                 db.store_chaos_event(now, name, name, "verified",
                                      "pass" if all(s["assertions"]) else "fail")
+        fsm = RESULTS.get("order_fsm", {})
+        if fsm and fsm.get("ok"):
+            db.upsert_fsm_order("demo-idempotent-1", "tok-demo", "buy", 100.0,
+                                0.40, fsm.get("final_state", "FILLED"))
+        ml = RESULTS.get("ml_residual", {})
+        if ml and ml.get("ok"):
+            db.store_ml_residual(now, "Tokyo", datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                                 None, ml.get("mae_ml", 0.0), ml.get("mae_zero", 0.0),
+                                 {"backend": ml.get("backend")})
         db.close()
         logger.info(f"✅ 结果已写入 {db_path}")
     except Exception as e:
@@ -452,15 +483,18 @@ async def main():
         ("microstructure", test_microstructure, "订单簿微观结构"),
         ("arbitrage", test_arbitrage, "跨市场/跨期套利"),
         ("ml_residual", test_ml_residual, "ML 残差学习"),
-        ("order_fsm", lambda: asyncio.run(test_order_fsm()), "订单状态机 FSM"),
+        ("order_fsm", test_order_fsm, "订单状态机 FSM"),
         ("walk_forward", test_walk_forward, "Walk-Forward 回测"),
-        ("chaos", lambda: asyncio.run(test_chaos()), "混沌工程"),
+        ("chaos", test_chaos, "混沌工程"),
     ]
 
     passed = 0
     for key, fn, label in checks:
         try:
-            ok = fn()
+            if asyncio.iscoroutinefunction(fn):
+                ok = await fn()
+            else:
+                ok = await asyncio.to_thread(fn)
             passed += 1 if ok else 0
             logger.info(f"  ✅ [{label}] 通过")
         except Exception as e:

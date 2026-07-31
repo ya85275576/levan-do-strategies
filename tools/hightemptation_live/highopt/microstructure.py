@@ -192,14 +192,18 @@ class OrderBookShape:
 
     @property
     def lob_shape(self) -> str:
-        """按厚度分类: THICK / NORMAL / THIN"""
-        if self.snap.total_depth < self.min_depth * 0.5:
+        """
+        按近端流动性分类: THICK / NORMAL / THIN。
+        判据 = 距中间价 ±0.05 内的累计深度（近端流动性是吃单冲击的直接缓冲）:
+          - < min_depth          → THIN（近端无支撑）
+          - ≥ min_depth * 3      → THICK
+          - 其余                → NORMAL
+        """
+        near = self.cumulative_depth("both", max_dist=0.05)
+        if near < self.min_depth:
             return "THIN"
-        slope = self.depth_slope()
-        if slope >= self.thin_slope * 3:
+        if near >= self.min_depth * 3:
             return "THICK"
-        if slope < self.thin_slope:
-            return "THIN"
         return "NORMAL"
 
     def to_dict(self) -> dict:

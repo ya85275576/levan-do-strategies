@@ -54,11 +54,29 @@
 
 ---
 
+## L6 — 高阶优化（第二波，已落地于 `tools/hightemptation_live/highopt/`）
+
+| # | 项目 | 实现 | 说明 |
+|---|------|------|------|
+| 6.1 | **订单簿微观结构** | `highopt/microstructure.py` | LOB 形状建模、深度斜率检测、Square-Root Law 冲击预估（ΔP=k·σ·√(Q/V)）、VPIN 逆向选择过滤 |
+| 6.2 | **跨市场/跨期套利** | `highopt/arbitrage.py` | 桶分割（ΣYES≈1）、相邻桶 Put-Call Parity、合并桶可加性、期限结构倒挂/升水、多平台价差 |
+| 6.3 | **ML 残差学习** | `highopt/ml_residual.py` | LightGBM/XGBoost（降级 sklearn/均值）修正物理模型残差、在线学习（滚动窗口）、NLP 情绪增强 |
+| 6.4 | **订单状态机 FSM** | `highopt/order_fsm.py` | Client Order ID 幂等、幽灵订单防护（UNKNOWN 态）、部分成交累计、仓位对账 |
+| 6.5 | **Walk-Forward 回测** | `highopt/walk_forward.py` | Point-in-Time 数据（无前视断言）、成本敏感性扫描、夏普/Calmar 稳定性 |
+| 6.6 | **混沌工程** | `highopt/chaos.py` | 故障注入（延迟/404/500/丢包/余额突变）、熔断器 CLOSED→OPEN→HALF_OPEN→CLOSED、5 场景验证 |
+
+数据库新增 5 张表：`fsm_orders` / `microstructure_snapshots` / `arbitrage_signals` / `ml_residuals` / `chaos_events`。
+自检：`cd tools/hightemptation_live && python3 -m highopt.runner`（6/6 通过）。
+
+---
+
 ## 实施顺序建议
 
 ```
 L1 数据模型 ──→ L2 执行成本 ──→ L3 组合风险 ──→ L4 时间衰减 ──→ L5 实盘工程
    (1-2周)        (1-2周)         (1-2周)         (1周)           (2-3周)
+        └──────────────→ L6 高阶优化（第二波）已落地
 ```
 
-当前状态: **L1 待开始**，v2 回测框架已就绪含 P0 优化。
+当前状态: **L6 已落地（`tools/hightemptation_live/highopt/` 6 模块 + runner 自检 6/6 通过）**，
+待实盘接入（见 HIGHOPT_README.md 接入建议）。

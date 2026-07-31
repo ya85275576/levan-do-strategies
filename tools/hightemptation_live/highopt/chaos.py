@@ -271,7 +271,8 @@ class ChaosVerifier:
         cb = CircuitBreaker(self.failure_threshold, self.cooldown,
                             self.success_threshold,
                             fallback=lambda: {"fallback": True})
-        wrapped = injector.wrap(self._mock_api)
+        # 注意: wrap 返回协程，必须每次调用新建（lambda 包装）
+        wrapped = lambda: injector.wrap(self._mock_api)
         results = []
         for _ in range(n_calls):
             try:

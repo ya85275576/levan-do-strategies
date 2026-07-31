@@ -127,17 +127,15 @@ class BucketPartitionArb:
 
 class AdjacentBucketParity:
     """
-    相邻桶平价。
+    相邻桶 Put-Call Parity。
 
-    温度 X 的 CDF 单调不减 → 对相邻桶 i=[a,b), j=[b,c):
-      P(YES_i) ≤ P(YES_j)
+    概率公理约束（无需模型）:
+      1. 每桶自洽: YES + NO ≈ 1 —— 超过成本带即可「卖贵边买便宜边」
+      2. 合并桶可加性: 若 [a,b]、[b,c]、[a,c] 三个市场同时存在,
+         YES[a,b] + YES[b,c] ≈ YES[a,c]（违反 → 三腿套利）
 
-    检查:
-      - yes_i - yes_j > tol + cost → 违反: 买 NO_i（价高者跌）+ 买 YES_j（价低者涨）
-      - 每桶自身的 Put-Call Parity: yes + no ≈ 1（含成本带）
-
-    模型感知: 可传入 sigma（预报不确定性）放大容忍带，
-    避免在模型本身不确定时误报。
+    注意: 相邻桶的 YES 价格本身不满足单调性（分布可在中间桶取峰），
+    故不检查“低桶 yes > 高桶 yes”这类伪约束。
     """
 
     def __init__(self, fee_pct: float = DEFAULT_FEE_PCT,
@@ -147,48 +145,56 @@ class AdjacentBucketParity:
         self.gas_usd = gas_usd
         self.tol = tol
 
-    def check(self, adjacent_pairs: List[Tuple[dict, dict]],
-              sigma: Optional[float] = None,
+    def check(self, buckets: List[dict],
               min_qty: float = 1.0) -> List[ArbitrageSignal]:
         """
-        :param adjacent_pairs: [(低桶 dict, 高桶 dict), ...]
-          dict: {"key","yes","no","qty"}
-        :param sigma: 模型 σ（°C）→ 容忍带 = tol + sigma*0.005（启发式）
+        检查每桶 put-call parity（YES + NO ≈ 1）。
+        :param buckets: [{"key", "yes", "no", ...}, ...]
         """
-        tolerance = self.tol + (sigma * 0.005 if sigma else 0.0)
         cost_each = self.fee_pct / 100.0 * 2 + self.gas_usd / max(min_qty, 1e-9)
         signals: List[ArbitrageSignal] = []
-
-        for lo, hi in adjacent_pairs:
-            # 自身平价
-            if abs(lo["yes"] + lo["no"] - 1.0) > cost_each + 0.005:
-                edge = abs(lo["yes"] + lo["no"] - 1.0) - cost_each
+        for b in buckets:
+            s = b["yes"] + b["no"]
+            if abs(s - 1.0) > cost_each + self.tol:
+                edge = abs(s - 1.0) - cost_each - self.tol
                 signals.append(ArbitrageSignal(
                     arb_type="put_call_parity",
-                    description=(f"{lo['key']} YES+NO={lo['yes']+lo['no']:.3f} ≠ 1"
-                                 f"（差 {edge*100:.1f}¢）"),
+                    description=(f"{b['key']} YES+NO={s:.3f} ≠ 1"
+                                 f"（净 {edge * 100:.1f}¢）"),
                     expected_pnl=round(edge * min_qty, 4),
-                    gross_edge=round(abs(lo["yes"] + lo["no"] - 1.0), 4),
-                    cost=round(cost_each, 4),
-                    instruments=[lo["key"]],
-                    meta={"direction": "sell" if lo["yes"]+lo["no"] > 1 else "buy",
-                          "yes": lo["yes"], "no": lo["no"]},
-                ))
-            # 单调性
-            if lo["yes"] - hi["yes"] > tolerance + cost_each:
-                edge = lo["yes"] - hi["yes"] - tolerance - cost_each
-                signals.append(ArbitrageSignal(
-                    arb_type="adjacent_monotone",
-                    description=(f"{lo['key']} YES={lo['yes']:.3f} > {hi['key']} "
-                                 f"YES={hi['yes']:.3f}（CDF 单调违反, 净 {edge*100:.1f}¢）"),
-                    expected_pnl=round(edge * min_qty, 4),
-                    gross_edge=round(lo["yes"] - hi["yes"], 4),
-                    cost=round(tolerance + cost_each, 4),
-                    instruments=[lo["key"], hi["key"]],
-                    meta={"direction": "buy_no_low_sell_yes_high",
-                          "lo_yes": lo["yes"], "hi_yes": hi["yes"]},
+                    gross_edge=round(abs(s - 1.0), 4),
+                    cost=round(cost_each + self.tol, 4),
+                    instruments=[b["key"]],
+                    meta={"direction": "sell" if s > 1 else "buy",
+                          "yes": b["yes"], "no": b["no"]},
                 ))
         return signals
+
+    def check_additive(self, bucket_lo: dict, bucket_hi: dict,
+                       combined: dict,
+                       min_qty: float = 1.0) -> List[ArbitrageSignal]:
+        """
+        合并桶可加性: YES[a,b] + YES[b,c] ≈ YES[a,c]。
+        :param bucket_lo: 低桶 [a,b] 报价
+        :param bucket_hi: 高桶 [b,c] 报价
+        :param combined:  合并桶 [a,c] 报价
+        """
+        lhs = bucket_lo["yes"] + bucket_hi["yes"]
+        rhs = combined["yes"]
+        cost = self.fee_pct / 100.0 * 3 + self.gas_usd / max(min_qty, 1e-9)
+        if abs(lhs - rhs) <= cost + self.tol:
+            return []
+        edge = abs(lhs - rhs) - cost - self.tol
+        return [ArbitrageSignal(
+            arb_type="additive_parity",
+            description=(f"合并桶可加性: YES[{bucket_lo['key']}]+YES[{bucket_hi['key']}]="
+                         f"{lhs:.3f} vs 合并 YES={rhs:.3f}（净 {edge * 100:.1f}¢）"),
+            expected_pnl=round(edge * min_qty, 4),
+            gross_edge=round(abs(lhs - rhs), 4),
+            cost=round(cost + self.tol, 4),
+            instruments=[bucket_lo["key"], bucket_hi["key"], combined["key"]],
+            meta={"lhs": lhs, "rhs": rhs, "direction": "sell" if lhs > rhs else "buy"},
+        )]
 
 
 # ════════════════════════════════════════════════════════════════
@@ -292,13 +298,15 @@ class MultiPlatformSpread:
         """
         if len(platform_quotes) < 2:
             return []
-        best_bid_platform, best_bid = max(platform_quotes.items(),
-                                          key=lambda kv: kv[1]["bid"])
-        best_ask_platform, best_ask = min(platform_quotes.items(),
-                                          key=lambda kv: kv[1]["ask"])
-        if best_bid >= best_ask:
-            return []  # 无跨平台价差
-        spread = best_ask - best_bid
+        best_bid_platform = max(platform_quotes.items(),
+                                key=lambda kv: kv[1]["bid"])[0]
+        best_ask_platform = min(platform_quotes.items(),
+                                key=lambda kv: kv[1]["ask"])[0]
+        best_bid = platform_quotes[best_bid_platform]["bid"]
+        best_ask = platform_quotes[best_ask_platform]["ask"]
+        if best_bid <= best_ask:
+            return []  # 无跨平台价差（需 卖价 > 买价 才有利可图）
+        spread = best_bid - best_ask
         cost = self.fee_pct / 100.0 * 2 + self.gas_usd / max(
             min(platform_quotes[best_ask_platform]["depth"],
                 platform_quotes[best_bid_platform]["depth"]), 1e-9)
@@ -344,14 +352,21 @@ class ArbitrageScanner:
 
     def scan_bucket_group(self, buckets: List[dict],
                           sigma: Optional[float] = None,
-                          covers_all: bool = True) -> List[ArbitrageSignal]:
-        """对一组桶运行桶分割 + 相邻桶平价检查"""
-        signals = self.partition.check(buckets, covers_all=covers_all)
-        # 构造相邻对（按 lower 排序）
-        sorted_b = sorted(buckets, key=lambda b: b.get("lower", 0))
-        pairs = [(sorted_b[i], sorted_b[i + 1])
-                 for i in range(len(sorted_b) - 1)]
-        signals += self.parity.check(pairs, sigma=sigma)
+                          covers_all: bool = True,
+                          min_qty: float = 1.0,
+                          combined: Optional[dict] = None) -> List[ArbitrageSignal]:
+        """
+        对一组桶运行 桶分割 + 每桶 put-call parity 检查。
+        :param combined: 可选的合并桶报价，用于可加性检查
+        """
+        signals = self.partition.check(buckets, min_qty=min_qty,
+                                       covers_all=covers_all)
+        signals += self.parity.check(buckets, min_qty=min_qty)
+        if combined:
+            sorted_b = sorted(buckets, key=lambda b: b.get("lower", 0))
+            for i in range(len(sorted_b) - 1):
+                signals += self.parity.check_additive(
+                    sorted_b[i], sorted_b[i + 1], combined, min_qty=min_qty)
         return signals
 
     def scan_term_structure(self, quotes: List[dict]) -> List[ArbitrageSignal]:
