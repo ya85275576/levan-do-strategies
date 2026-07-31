@@ -118,6 +118,18 @@ def _create_app():
                 "last_scan": b._last_scan,
             },
         }
+        # ── 5min Bot 子模块指标 (Benjam1nCup 整合) ──
+        adapter = getattr(b, "_adapter", None)
+        if adapter:
+            out["5min"] = {
+                "adapter": True,
+                "dry_run": adapter.cfg.DRY_RUN,
+                "stats": adapter.engine.stats,
+                "signal_counts": adapter.engine.history.count_by_strategy(),
+                "open_positions": len([p for p in adapter.engine._positions if p.is_open]),
+                "shared_risk": adapter.risk.stats(),
+                "account": adapter.account.status(),
+            }
         e = _engine()
         if e:
             s = e.summary()
@@ -244,6 +256,16 @@ def _create_app():
     def strategies():
         b = _bot()
         return b.get_strategies_data() if hasattr(b, "get_strategies_data") else {}
+
+    # ── 5min Bot 子模块状态 (Benjam1nCup 整合: 套利/狙击/动量/阶梯) ──
+    @app.get("/api/5min")
+    def five_min():
+        b = _bot()
+        adapter = getattr(b, "_adapter", None)
+        if not adapter:
+            return {"adapter": False,
+                    "message": "PM5_ENABLED=false, 5min 子模块未启动"}
+        return adapter.status()
 
     @app.post("/api/strategy/toggle")
     async def strategy_toggle(request: Request):

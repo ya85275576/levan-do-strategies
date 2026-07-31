@@ -7,3 +7,7 @@ scikit-learn>=1.3.0      # 概率校准 IsotonicRegression
 matplotlib>=3.7.0        # Reliability Diagram
 fastapi>=0.110.0         # API 服务器 (替代手写 http.server)
 uvicorn>=0.29.0          # FastAPI ASGI 服务器
+# ── 5分钟 Bot 子模块 (Benjam1nCup 整合) ──
+websockets>=12.0         # CLOB WebSocket 实时订单簿 (可选增强, 默认走 REST 轮询)
+ccxt>=4.0.0              # 现货行情统一封装 (可选; 默认 Coinbase REST)
+polymarket-client>=0.2.0 # 官方 CLOB V2 客户端 (可选; 默认内置轻量 CLOB 实现)

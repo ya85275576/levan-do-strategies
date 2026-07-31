@@ -95,6 +95,10 @@ _cost_model = None        # CostModel
 _portfolio_risk = None    # PortfolioRiskManager
 _last_calib_retrain_date = None
 
+# ── 5min Bot 子模块适配器 (Benjam1nCup 整合, 供 /api/5min 读取) ──
+_adapter = None           # Polymarket5MinAdapter
+_adapter_task = None      # asyncio.Task
+
 
 # ── 高斯 CDF ──────────────────────────────────────────────────────────
 try:
@@ -3123,6 +3127,23 @@ async def main():
         start_api_server(cfg.DASHBOARD_HOST, cfg.DASHBOARD_PORT)
     else:
         logger.warning("⚠️ api_server 导入失败, 请 pip install fastapi uvicorn")
+
+    # ── 5min Bot 子模块集成 (Benjam1nCup: 套利/狙击/动量/阶梯) ──
+    global _adapter, _adapter_task
+    _adapter = None
+    _adapter_task = None
+    if os.getenv("PM5_ENABLED", "true").lower() == "true":
+        try:
+            from adapters.polymarket_5min_adapter import Polymarket5MinAdapter
+            _adapter = Polymarket5MinAdapter(cfg=cfg, weather_engine=_engine)
+            _adapter_task = asyncio.create_task(_adapter.run())
+            logger.info("🤝 5min Bot 子模块已启动: 共享风控/统一账户/看板已桥接 (DRY_RUN=%s)",
+                        _adapter.cfg.DRY_RUN)
+        except Exception as e:
+            logger.warning(f"⚠️ 5min Bot 子模块启动失败 (PM5_ENABLED=true 但加载出错): {e}")
+            _adapter = None
+    else:
+        logger.info("5min Bot 子模块=OFF (PM5_ENABLED=false)")
 
     # 初始偏差更新（只對已知站點）
     if cfg.BIAS_ENABLED:

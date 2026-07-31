@@ -320,9 +320,45 @@ edge_net = |p_model - p_market| - taker_fee - gas - slippage - impact - theta_de
 ### 🌐 FastAPI 替代手写 HTTP Server
 
 - 自动交互式文档 `/docs` (Swagger UI)
-- 新增 `/api/metrics` / `/api/calibration` / `/api/calibration/diagram` / `/api/health`
+- 新增 `/api/metrics` / `/api/calibration` / `/api/calibration/diagram` / `/api/health` / `/api/5min`
 - 保留全部旧端点，dashboard.html 零改动
 - bot 主循环单进程不变，API 服务器跑在 daemon 线程 (独立事件循环)
+
+---
+
+## ⚡ 5分钟套利子模块 (Benjam1nCup 整合)
+
+整合 [Benjam1nCup/Polymarket-trading-bot-python-V2](https://github.com/Benjam1nCup/Polymarket-trading-bot-python-V2)
+的策略理念 (上游仓库仅 README 营销页无源码，本仓库按四大类策略独立实现)：
+
+| 策略 | 文件 | 逻辑 |
+|------|------|------|
+| 🧲 套利 | `polymarket_5min_bot/strategies/arbitrage.py` | 互补套利: Buy1 买高概率侧 → Buy2 立即买对面，组合成本 ≤0.95 结算赎回 $1.00 |
+| 🎯 狙击 | `polymarket_5min_bot/strategies/sniper.py` | Endcycle Sniper: 结算前 45s 价格 ≥0.95 买入锁定 |
+| ⚡ 动量 | `polymarket_5min_bot/strategies/momentum.py` | 订单簿 OBI 压力突变 + 现货价与行权价偏离双确认 |
+| 🪜 阶梯 | `polymarket_5min_bot/strategies/ladder.py` | Ladder 双向做市 (组合价值>1.01) + Stair 结算前分批出场 |
+
+### 统一适配层 `adapters/polymarket_5min_adapter.py`
+
+- **共享风控** (`shared_risk.py`): 日亏损上限 + 总仓位限制 + 连亏熔断，与天气 Bot 同一实例 → 任一侧超限同时熔断两侧
+- **统一账户** (`account_manager.py`): 全局订单锁 + 递增 nonce + 余额统一记账，杜绝两 Bot 并发下单冲突
+- **看板整合**: `/api/5min` 端点 + Streamlit 新增「⚡ 5分钟套利」标签页
+- **DRY_RUN 验证**: `scripts/verify_5min_integration.py` (19 项检查)
+
+### 启动方式
+
+```bash
+# 集成模式 (推荐): bot.py 主进程内 PM5_ENABLED=true 自动启动
+PM5_ENABLED=true python3 bot.py
+
+# 独立调试: 只跑 5min 子模块
+python3 -m polymarket_5min_bot
+
+# DRY_RUN 验证 (19 项检查)
+python3 scripts/verify_5min_integration.py
+```
+
+> ⚠️ 独立模式与集成模式不要同时运行，避免重复交易同一账户。
 
 ---
 
@@ -398,6 +434,8 @@ posterior ∝ prior × L(radiation) × L(cloud) × L(wind) × L(humidity)
 - [x] **组合风控 (同事件/相邻桶限制 + 相关性熔断)**
 - [x] **异步 IO 并行拉取 (asyncio.gather)**
 - [x] **FastAPI 服务器 (自动 /docs + /api/metrics)**
+- [x] **5分钟套利子模块 (Benjam1nCup 整合: 套利/狙击/动量/阶梯)**
+- [x] **共享风控 + 统一账户 (跨 Bot 熔断)**
 - [ ] 更多数据源 (JMA, DWD, NOAA)
 - [ ] 策略可视化编辑器
 - [ ] 压力测试框架
