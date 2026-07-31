@@ -1,0 +1,9 @@
+httpx>=0.27.0
+python-dotenv>=1.0.0
+scipy>=1.10.0
+python-dateutil>=2.8.0
+# ── 生产级架构 (Day1) ──
+scikit-learn>=1.3.0      # 概率校准 IsotonicRegression
+matplotlib>=3.7.0        # Reliability Diagram
+fastapi>=0.110.0         # API 服务器 (替代手写 http.server)
+uvicorn>=0.29.0          # FastAPI ASGI 服务器
