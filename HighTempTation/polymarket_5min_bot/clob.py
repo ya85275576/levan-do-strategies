@@ -197,8 +197,8 @@ class CLOBClient:
         try:
             timestamp = str(int(time.time() * 1000))
             # L2 认证头签名 (POLYMARKET_API_SECRET)
-            sign_body = f"{timestamp}{'GET' if False else 'POST'}{'/order'}"
-            sig = hmac.new(self.api_secret.encode(), sign_body.encode(),
+            sig = hmac.new(self.api_secret.encode(),
+                           f"{timestamp}POST/order".encode(),
                            hashlib.sha256).hexdigest()
             payload = {
                 "market": order.market_id,

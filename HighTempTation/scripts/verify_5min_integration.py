@@ -191,12 +191,18 @@ async def verify_adapter():
                 "account" in adapter.status(),
                 "/api/5min 数据源就绪 (shared_risk+account)")
     # 结算链路: 手动触发一次结算 (模拟 5min 周期结束)
+    risk_open_before = get_shared_risk()._open_count
     for p in adapter.engine._positions:
         p.market.end_time = time.time() - 1
     await adapter.engine._settle_finished()
     ok &= check("[7] 结算链路", adapter.engine.stats["settled"] > 0,
                 f"已结算 {adapter.engine.stats['settled']}, "
                 f"胜 {adapter.engine.stats['wins']} 负 {adapter.engine.stats['losses']}")
+    # 结算回调必须释放共享总仓位 (report_open(-1)), 否则仓位计数只增不减
+    risk_open_after = get_shared_risk()._open_count
+    ok &= check("[4] 结算释放仓位", risk_open_after < risk_open_before,
+                f"共享总仓位 {risk_open_before} → {risk_open_after} "
+                f"(结算回调释放, 防只增不减)")
 
     # 风控联动: 设置日亏损熔断后新信号应被拦截
     risk = get_shared_risk()

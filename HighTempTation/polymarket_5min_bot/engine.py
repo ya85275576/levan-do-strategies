@@ -144,6 +144,9 @@ class FiveMinEngine:
         self.spot = spot or SpotPriceFeed(self.cfg.TARGET_ASSETS)
         self.scanner = scanner or MarketScanner(self.cfg)
         self.executor = executor or SignalExecutor(self.clob, self.cfg)
+        # 结算回调 (可选): 由适配层注入, 用于上报共享风控 (仓位释放/盈亏入账)
+        # 保持子模块独立: 不直接依赖 HighTempTation 的 shared_risk
+        self.on_position_settled = None  # Callable[[float], None]  # pnl
         self.history = SignalHistory()
         self._positions: List[Position] = []
         self._closed: List[Position] = []
@@ -253,6 +256,12 @@ class FiveMinEngine:
             self.stats["wins" if win >= 0 else "losses"] += 1
             logger.info(f"🧾 结算 {p.market.event_id} {p.strategy}: "
                         f"组合成本 ${1-win:.3f} → 收益 {win*100:+.1f}%")
+            # 结算回调: 适配层据此上报共享风控 (仓位-1 + 盈亏入账)
+            if self.on_position_settled is not None:
+                try:
+                    self.on_position_settled(win)
+                except Exception as e:
+                    logger.warning(f"结算回调异常: {e}")
         # 清理已结束市场
         self._markets = [m for m in self._markets if m.is_live]
 

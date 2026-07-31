@@ -113,11 +113,23 @@ class Polymarket5MinAdapter:
         self.engine = FiveMinEngine(self.cfg, clob=self.clob)
         self.engine.executor = GuardedExecutor(self.clob, self.cfg,
                                                self.account, self.risk)
+        # 结算回调 → 共享风控: 释放总仓位计数 + 盈亏入账 (日亏损熔断联动)
+        self.engine.on_position_settled = self._on_5min_settled
 
         self._task: Optional[asyncio.Task] = None
         self._weather_last_pnl = 0.0
+        self._weather_last_open = 0
         self._sync_interval = 60.0
         self.started = False
+
+    # ── 5min 结算上报 (仓位释放 + 盈亏入账) ──
+    def _on_5min_settled(self, win: float):
+        """5min 持仓结算回调: 共享风控仓位 -1, 盈亏计入共享日亏损"""
+        try:
+            self.risk.report_open(-1)
+        except Exception as e:
+            logger.warning(f"结算释放仓位失败: {e}")
+        self.sync_settled_pnl(win)
 
     # ── 生命周期 ──
     async def start(self):
@@ -169,6 +181,12 @@ class Polymarket5MinAdapter:
                 # 增量结转给共享风控 (只在方向变化时记录; 首轮为基线)
                 if self._weather_last_pnl != 0.0 or abs(delta) > 0:
                     self.risk.report_pnl(delta)
+            # 天气持仓数同步到共享总仓位 (增量对齐, 防漂移)
+            w_open = int(s.get("open_count", 0) or 0)
+            diff = w_open - self._weather_last_open
+            if diff:
+                self.risk.report_open(diff)
+                self._weather_last_open = w_open
         except Exception as e:
             logger.debug(f"天气盈亏同步失败: {e}")
 

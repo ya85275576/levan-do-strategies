@@ -343,7 +343,7 @@ edge_net = |p_model - p_market| - taker_fee - gas - slippage - impact - theta_de
 - **共享风控** (`shared_risk.py`): 日亏损上限 + 总仓位限制 + 连亏熔断，与天气 Bot 同一实例 → 任一侧超限同时熔断两侧
 - **统一账户** (`account_manager.py`): 全局订单锁 + 递增 nonce + 余额统一记账，杜绝两 Bot 并发下单冲突
 - **看板整合**: `/api/5min` 端点 + Streamlit 新增「⚡ 5分钟套利」标签页
-- **DRY_RUN 验证**: `scripts/verify_5min_integration.py` (19 项检查)
+- **DRY_RUN 验证**: `scripts/verify_5min_integration.py` (20 项检查)
 
 ### 启动方式
 
@@ -354,7 +354,7 @@ PM5_ENABLED=true python3 bot.py
 # 独立调试: 只跑 5min 子模块
 python3 -m polymarket_5min_bot
 
-# DRY_RUN 验证 (19 项检查)
+# DRY_RUN 验证 (20 项检查)
 python3 scripts/verify_5min_integration.py
 ```
 

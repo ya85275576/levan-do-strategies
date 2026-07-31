@@ -94,14 +94,14 @@ HighTempTation/
 ```bash
 cd HighTempTation
 python3 scripts/verify_5min_integration.py
-# 预期: 19 项检查全部 ✅ (见脚本内 [1]-[7] 编号对应集成需求)
+# 预期: 20 项检查全部 ✅ (见脚本内 [1]-[7] 编号对应集成需求)
 ```
 
 验证覆盖:
 1. 子模块导入 + 四大策略注册 (ARB/SNIPER/MOMENTUM/LADDER/STAIR)
 2. 适配层构造 + GuardedExecutor 门控注入
 3. requirements.txt 依赖合并 (websockets/ccxt/polymarket-client)
-4. 共享风控: 日亏损熔断 / 总仓位限制 / 与引擎联动拦截
+4. 共享风控: 日亏损熔断 / 总仓位限制 / **结算释放仓位 (防只增不减)** / 与引擎联动拦截
 5. 统一账户: 单例 / nonce 递增 / 余额不足拦截
 6. 看板数据通路: /api/5min 数据源
 7. DRY_RUN: 全程模拟撮合、结算、信号链路（含狙击窗口与套利双腿）
